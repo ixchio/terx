@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "terx"
+version = "0.1.0"
+description = "Memory layer for browser agents — zero LLM tokens on repeated tasks. Writes .vcr files compatible with Agent VCR."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "ixchio" }]
+keywords = [
+    "browser-agent", "cdp", "chrome-devtools-protocol",
+    "mcp", "model-context-protocol", "browser-automation",
+    "agent-memory", "semantic-cache", "browser-use",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
+
+dependencies = [
+    "websockets>=13.0",
+    "aiohttp>=3.9",
+    "mcp>=1.0",
+    "mmh3>=4.0",
+]
+
+[project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=3.0",
+    "numpy>=1.24",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-benchmark>=4.0",
+    "rich>=13.0",
+    "ruff>=0.4",
+]
+all = ["terx[embeddings,dev]"]
+
+[project.scripts]
+terx-server = "terx.server.mcp:main"
+terx-bench  = "terx.benchmarks.baseline:main"
+
+[project.urls]
+Homepage   = "https://github.com/ixchio/terx"
+Repository = "https://github.com/ixchio/terx"
+Issues     = "https://github.com/ixchio/terx/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["terx"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths   = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
