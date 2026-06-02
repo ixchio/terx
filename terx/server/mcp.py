@@ -11,12 +11,9 @@ import asyncio
 import base64
 import collections
 import hashlib
-import json
 import logging
 import sys
 import time
-from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 try:
@@ -28,7 +25,7 @@ except ImportError:
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 from terx.cache.cache import (
-    CDPCommand, MuscleMemorycache, ReplayCostLedger, session_for
+    MuscleMemorycache
 )
 
 logger = logging.getLogger(__name__)

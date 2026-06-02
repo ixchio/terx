@@ -1,10 +1,7 @@
-import pytest
 import tempfile
-import json
-from pathlib import Path
 
-from terx.dom.extractor import AXElement, _structural_hash, _build_role_sequence, hash_similarity
-from terx.cache.cache import MuscleMemorycache, CDPCommand, session_for
+from terx.dom.extractor import hash_similarity
+from terx.cache.cache import MuscleMemorycache, CDPCommand
 
 def test_deterministic_ids():
     from terx.dom.extractor import DOMExtractor
