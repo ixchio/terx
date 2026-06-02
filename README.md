@@ -6,6 +6,7 @@
 **Your agent logs into Salesforce 50 times a day. TERX makes runs 2–50 cost zero tokens.**
 
 <br>
+<a href="https://github.com/ixchio/terx/actions/workflows/tests.yml"><img src="https://github.com/ixchio/terx/actions/workflows/tests.yml/badge.svg" alt="CI Status"></a>
 <a href="https://pypi.org/project/terx/"><img src="https://img.shields.io/pypi/v/terx?style=flat-square&color=00d4aa&label=PyPI" alt="PyPI"></a>
 <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue?style=flat-square" alt="Python"></a>
@@ -57,25 +58,9 @@ Total: $0.008 · 2,100 tokens — 98% cost reduction
 
 ## How It Works
 
-```
-Your AI Agent
-      ↓
-  Task: "login to salesforce"
-      ↓
-┌─────────────────────────────────────────┐
-│  TERX Muscle Memory Cache               │
-│                                         │
-│  lookup(domain, dom_structure_hash)     │
-│         ↓                               │
-│  HIT → replay CDP commands → done      │  ← zero LLM, 40ms
-│  MISS → run agent → record commands    │  ← normal LLM call
-│          ↓                              │
-│  store(hash, commands)                  │
-│  write .vcr file                        │
-└─────────────────────────────────────────┘
-      ↓
-  Chrome (raw CDP WebSocket, no Playwright)
-```
+<div align="center">
+  <img src="docs/assets/architecture.svg" alt="TERX Architecture Flow" width="100%">
+</div>
 
 Three components:
 
