@@ -8,8 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Callable
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -42,6 +43,15 @@ class CDPBridge:
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._listener_task: asyncio.Task | None = None
         self._connected: bool = False
+        self._recorders: list[Callable[[str, dict, dict, float], None]] = []
+
+    def add_recorder(self, recorder: Callable[[str, dict, dict, float], None]) -> None:
+        if recorder not in self._recorders:
+            self._recorders.append(recorder)
+
+    def remove_recorder(self, recorder: Callable[[str, dict, dict, float], None]) -> None:
+        if recorder in self._recorders:
+            self._recorders.remove(recorder)
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle                                                  #
@@ -105,6 +115,7 @@ class CDPBridge:
         self._pending[cmd_id] = future
 
         message = json.dumps({"id": cmd_id, "method": method, "params": params or {}})
+        t0 = time.perf_counter()
         await self._ws.send(message)
         logger.debug("CDP → %s %s", method, params)
 
@@ -115,6 +126,14 @@ class CDPBridge:
             raise asyncio.TimeoutError(
                 f"CDP command '{method}' timed out after {self.timeout}s"
             )
+
+        latency_ms = (time.perf_counter() - t0) * 1000
+        
+        for recorder in self._recorders:
+            try:
+                recorder(method, params or {}, result, latency_ms)
+            except Exception as e:
+                logger.error("CDP recorder failed: %s", e)
 
         return result
 

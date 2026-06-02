@@ -122,9 +122,8 @@ async def run_task():
                 await ctx.replay()
             else:
                 # Run 1: your agent runs normally
+                # The Transparent CDP Proxy automatically records all commands!
                 await your_agent.run("login to salesforce")
-                # record each CDP command you send:
-                # ctx.record_command(CDPCommand(method, params, result, latency_ms))
 
         print(ctx.ledger)
         # 💾 Cache HIT · 12 commands · 41ms · ~12 LLM calls saved · run #3
@@ -262,11 +261,12 @@ Search + click (6 cmds) | 1.8s · $0.004 | 21ms · $0.000   | 99%
 - [x] Fuzzy DOM structural hasher
 - [x] Muscle memory cache (SQLite)
 - [x] `.vcr` output (Agent VCR compatible)
-- [x] MCP server with FastMCP
+- [x] FastMCP Server with 10 tools
 - [x] Framework-adaptive input (React/Vue safe)
 - [x] Screenshot hash refs (no context poisoning)
 - [x] Self-healing replay (fallback to LLM on DOM drift, auto-update cache)
 - [x] Visual Audits via SSIM (Structural Similarity Index)
+- [x] Transparent CDP Recording Proxy (zero manual setup)
 - [ ] MutationObserver cache invalidation
 - [ ] Local embedding-based element lookup (`sentence-transformers`)
 - [ ] browser-use integration wrapper

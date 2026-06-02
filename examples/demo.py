@@ -15,28 +15,19 @@ from terx.dom.extractor import DOMExtractor
 from terx.cache.cache import CDPCommand, MuscleMemorycache, session_for
 
 
-async def simulate_login(session: BrowserSession, ctx) -> list[CDPCommand]:
+async def simulate_login(session: BrowserSession) -> None:
     """Simulate a login flow — in real usage this is your agent."""
     bridge = session.bridge()
-    recorded = []
 
-    async def tracked_send(method, params=None):
-        t0 = time.perf_counter()
-        result = await bridge.send(method, params or {})
-        latency = (time.perf_counter() - t0) * 1000
-        cmd = CDPCommand(method=method, params=params or {}, result=result, latency_ms=latency)
-        ctx.record_command(cmd)
-        return result
-
-    await tracked_send("Page.navigate", {"url": "https://example.com/login"})
+    await bridge.send("Page.navigate", {"url": "https://example.com/login"})
     await asyncio.sleep(0.5)
-    await tracked_send("Runtime.evaluate", {
+    await bridge.send("Runtime.evaluate", {
         "expression": "document.querySelector('#email').value = 'user@example.com'"
     })
-    await tracked_send("Runtime.evaluate", {
+    await bridge.send("Runtime.evaluate", {
         "expression": "document.querySelector('#password').value = 'secret'"
     })
-    await tracked_send("Runtime.evaluate", {
+    await bridge.send("Runtime.evaluate", {
         "expression": "document.querySelector('#login-btn').click()"
     })
 
@@ -62,7 +53,7 @@ async def main():
                     await ctx.replay()
                 else:
                     print("🔍 CACHE MISS — running agent, recording commands")
-                    await simulate_login(session, ctx)
+                    await simulate_login(session)
 
             if ctx.ledger:
                 print(ctx.ledger)

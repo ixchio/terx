@@ -35,6 +35,16 @@ SSIM_THRESHOLD = 0.85
 VCR_DIR = Path(".vcr")
 SCREENSHOT_DIR = Path(".terx/screenshots")
 
+MUTATING_CDP_METHODS = {
+    "Page.navigate",
+    "Input.dispatchMouseEvent",
+    "Input.dispatchKeyEvent",
+    "Input.insertText",
+    "DOM.focus",
+    "Runtime.evaluate",
+    "Runtime.callFunctionOn",
+}
+
 
 @dataclass
 class CDPCommand:
@@ -437,13 +447,24 @@ class RecordingContext:
         )
 
     def record_command(self, cmd: CDPCommand) -> None:
-        """Call this after each successful CDP command during a cache-miss run."""
+        """Manually record a command (legacy). Transparent proxy now auto-records."""
         self._recorded_commands.append(cmd)
 
+    def _auto_record(self, method: str, params: dict, result: dict, latency: float) -> None:
+        """Transparent interceptor: auto-captures mutating commands sent through the bridge."""
+        if method in MUTATING_CDP_METHODS:
+            cmd = CDPCommand(method=method, params=params, result=result, latency_ms=latency)
+            self._recorded_commands.append(cmd)
+
     async def __aenter__(self) -> "RecordingContext":
+        if not self.hit:
+            self._bridge.add_recorder(self._auto_record)
         return self
 
     async def __aexit__(self, exc_type: Any, *_: Any) -> None:
+        if not self.hit:
+            self._bridge.remove_recorder(self._auto_record)
+            
         if exc_type is not None:
             return  # Don't cache failed runs
 
