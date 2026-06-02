@@ -8,11 +8,9 @@ Writes a .vcr file readable by Agent VCR's VCRPlayer.
 """
 
 import asyncio
-import time
 
 from terx.cdp.session import BrowserSession
-from terx.dom.extractor import DOMExtractor
-from terx.cache.cache import CDPCommand, MuscleMemorycache, session_for
+from terx.cache.cache import MuscleMemorycache, session_for
 
 
 async def simulate_login(session: BrowserSession) -> None:
@@ -34,7 +32,6 @@ async def simulate_login(session: BrowserSession) -> None:
 
 async def main():
     cache = MuscleMemorycache()
-    extractor = DOMExtractor()
 
     print("🌐 Starting Chrome session...")
     async with BrowserSession() as session:
@@ -44,10 +41,7 @@ async def main():
             print(f"\n{'─' * 50}")
             print(f"RUN {run}: Login to example.com")
 
-            # Snapshot current DOM
-            snapshot = await extractor.snapshot(bridge)
-
-            async with session_for(cache, bridge, snapshot, "login to example.com") as ctx:
+            async with session_for(cache, bridge, "login to example.com") as ctx:
                 if ctx.hit:
                     print("💾 CACHE HIT — replaying, zero LLM calls")
                     await ctx.replay()

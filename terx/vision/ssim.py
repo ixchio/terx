@@ -1,12 +1,18 @@
-import cv2
-import numpy as np
-from skimage.metrics import structural_similarity as ssim_metric
+try:
+    import cv2
+    import numpy as np
+    from skimage.metrics import structural_similarity as ssim_metric
+    _HAS_DEPS = True
+except ImportError:
+    _HAS_DEPS = False
 
 def compute_ssim(img1_bytes: bytes, img2_bytes: bytes) -> float:
     """
     Compute Structural Similarity Index (SSIM) between two PNG images.
     Returns a score from -1.0 to 1.0 (1.0 = identical).
     """
+    if not _HAS_DEPS:
+        raise ImportError("SSIM requires opencv and scikit-image: pip install 'terx[vision]'")
     nparr1 = np.frombuffer(img1_bytes, np.uint8)
     nparr2 = np.frombuffer(img2_bytes, np.uint8)
     

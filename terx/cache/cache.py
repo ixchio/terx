@@ -24,8 +24,6 @@ from urllib.parse import urlparse
 
 from terx.cdp.bridge import CDPBridge
 from terx.dom.extractor import DOMExtractor, DOMSnapshot, hash_similarity
-from terx.agent.healer import SelfHealer
-from terx.vision.ssim import compute_ssim
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +41,12 @@ MUTATING_CDP_METHODS = {
     "DOM.focus",
     "Runtime.evaluate",
     "Runtime.callFunctionOn",
+}
+
+# Methods used internally by TERX that should NOT be recorded
+_INTERNAL_METHODS = {
+    "Accessibility.getFullAXTree",
+    "Page.captureScreenshot",
 }
 
 
@@ -345,27 +349,47 @@ class RecordingContext:
         self,
         cache: MuscleMemorycache,
         bridge: CDPBridge,
-        session_id: str,
         task: str,
-        domain: str,
-        snapshot: DOMSnapshot,
-        cached_seq: CachedSequence | None,
-        run_number: int,
+        session_id: str | None = None,
     ) -> None:
         self._cache = cache
         self._bridge = bridge
-        self._session_id = session_id
         self._task = task
-        self._domain = domain
-        self._snapshot = snapshot
-        self._cached_seq = cached_seq
-        self._run_number = run_number
+        self._session_id = session_id or f"browser_session_{int(time.time())}"
+        self._snapshot: DOMSnapshot | None = None
+        self._domain: str = "unknown"
+        self._cached_seq: CachedSequence | None = None
+        self._run_number: int = 1
         self._recorded_commands: list[CDPCommand] = []
         self.ledger: ReplayCostLedger | None = None
 
     @property
     def hit(self) -> bool:
         return self._cached_seq is not None
+
+    async def _wait_for_load(self, timeout: float = 2.0) -> None:
+        """Wait for the page readyState to be complete to prevent race conditions."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                # Use _ws directly to avoid triggering recorders for internal checks
+                self._bridge._id_counter += 1
+                cmd_id = self._bridge._id_counter
+                future = asyncio.get_running_loop().create_future()
+                self._bridge._pending[cmd_id] = future
+                import json as _json
+                await self._bridge._ws.send(_json.dumps({
+                    "id": cmd_id,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": "document.readyState"}
+                }))
+                res = await asyncio.wait_for(future, timeout=1.0)
+                state = res.get("result", {}).get("value")
+                if state == "complete":
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
 
     async def replay(self) -> None:
         """Replay the cached CDP command sequence directly. Zero LLM calls."""
@@ -374,6 +398,8 @@ class RecordingContext:
 
         t0 = time.perf_counter()
         for cmd in self._cached_seq.commands:
+            if cmd.method in MUTATING_CDP_METHODS:
+                await self._wait_for_load()
             try:
                 await self._bridge.send(cmd.method, cmd.params)
             except Exception as exc:
@@ -381,6 +407,7 @@ class RecordingContext:
                     "Replay failed at %s: %s — attempting self-healing",
                     cmd.method, exc
                 )
+                from terx.agent.healer import SelfHealer
                 healer = SelfHealer()
                 extractor = DOMExtractor()
                 current_snapshot = await extractor.snapshot(self._bridge)
@@ -408,10 +435,12 @@ class RecordingContext:
         
         if screenshot_path.exists():
             try:
+                import base64 as _b64
                 result = await self._bridge.send("Page.captureScreenshot", {"format": "png"})
-                new_screenshot = __import__('base64').b64decode(result.get("data", ""))
+                new_screenshot = _b64.b64decode(result.get("data", ""))
                 old_screenshot = screenshot_path.read_bytes()
                 
+                from terx.vision.ssim import compute_ssim
                 ssim_score = compute_ssim(old_screenshot, new_screenshot)
                 logger.info("Visual Audit SSIM Score: %.3f", ssim_score)
                 
@@ -457,6 +486,27 @@ class RecordingContext:
             self._recorded_commands.append(cmd)
 
     async def __aenter__(self) -> "RecordingContext":
+        # Capture DOM snapshot asynchronously on enter
+        extractor = DOMExtractor()
+        self._snapshot = await extractor.snapshot(self._bridge)
+        self._domain = urlparse(self._snapshot.url).netloc or "unknown"
+        
+        # Update session_id with domain if using default
+        if self._session_id.startswith("browser_session_"):
+            self._session_id = f"browser_{self._domain}_{self._session_id.split('_')[-1]}"
+
+        # Lookup cached sequence
+        self._cached_seq = self._cache.lookup(self._domain, self._snapshot.role_sequence, self._task)
+
+        # Calculate run number
+        db = self._cache._ensure_db()
+        task_key = _task_key(self._task)
+        self._run_number = db.execute(
+            "SELECT COALESCE(SUM(hit_count) + COUNT(*), 1) "
+            "FROM sequences WHERE domain = ? AND task_key = ?",
+            (self._domain, task_key)
+        ).fetchone()[0]
+
         if not self.hit:
             self._bridge.add_recorder(self._auto_record)
         return self
@@ -480,8 +530,9 @@ class RecordingContext:
             
             # Save visual baseline for future SSIM checks
             try:
+                import base64 as _b64
                 result = await self._bridge.send("Page.captureScreenshot", {"format": "png"})
-                screenshot_bytes = __import__('base64').b64decode(result.get("data", ""))
+                screenshot_bytes = _b64.b64decode(result.get("data", ""))
                 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
                 (SCREENSHOT_DIR / f"{self._snapshot.structural_hash}.png").write_bytes(screenshot_bytes)
             except Exception as e:
@@ -508,7 +559,6 @@ class RecordingContext:
 def session_for(
     cache: MuscleMemorycache,
     bridge: CDPBridge,
-    snapshot: DOMSnapshot,
     task: str,
     session_id: str | None = None,
 ) -> RecordingContext:
@@ -516,38 +566,18 @@ def session_for(
     Factory: create a RecordingContext for a task on the current page.
 
     Example:
-        snapshot = await extractor.snapshot(bridge)
-        async with session_for(cache, bridge, snapshot, "login to salesforce") as ctx:
+        async with session_for(cache, bridge, "login to salesforce") as ctx:
             if ctx.hit:
                 await ctx.replay()
             else:
-                # run your agent, call ctx.record_command() after each CDP send
-                result = await bridge.send("Page.navigate", {"url": "..."})
-                ctx.record_command(CDPCommand("Page.navigate", {...}, result, latency_ms))
+                await bridge.send("Page.navigate", {"url": "..."})
         print(ctx.ledger)
     """
-    domain = urlparse(snapshot.url).netloc or "unknown"
-    cached_seq = cache.lookup(domain, snapshot.role_sequence, task)
-
-    db = cache._ensure_db()
-    task_key = _task_key(task)
-    run_number = db.execute(
-        "SELECT COALESCE(SUM(hit_count) + COUNT(*), 1) "
-        "FROM sequences WHERE domain = ? AND task_key = ?",
-        (domain, task_key)
-    ).fetchone()[0]
-
-    sid = session_id or f"browser_{domain}_{int(time.time())}"
-
     return RecordingContext(
         cache=cache,
         bridge=bridge,
-        session_id=sid,
         task=task,
-        domain=domain,
-        snapshot=snapshot,
-        cached_seq=cached_seq,
-        run_number=run_number,
+        session_id=session_id,
     )
 
 

@@ -104,25 +104,21 @@ google-chrome --remote-debugging-port=9222 --headless=new
 ```python
 import asyncio
 from terx.cdp.session import BrowserSession
-from terx.dom.extractor import DOMExtractor
-from terx.cache.cache import CDPCommand, MuscleMemorycache, session_for
-import time
+from terx.cache.cache import MuscleMemorycache, session_for
 
 cache = MuscleMemorycache()
-extractor = DOMExtractor()
 
 async def run_task():
     async with BrowserSession() as session:
         bridge = session.bridge()
-        snapshot = await extractor.snapshot(bridge)
 
-        async with session_for(cache, bridge, snapshot, "login to salesforce") as ctx:
+        async with session_for(cache, bridge, "login to salesforce") as ctx:
             if ctx.hit:
                 # Run 2+: zero LLM tokens, 40ms
                 await ctx.replay()
             else:
                 # Run 1: your agent runs normally
-                # The Transparent CDP Proxy automatically records all commands!
+                # Transparent CDP Proxy auto-records all commands!
                 await your_agent.run("login to salesforce")
 
         print(ctx.ledger)
