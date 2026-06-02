@@ -7,7 +7,7 @@
 
 <br>
 <a href="https://github.com/ixchio/terx/actions/workflows/tests.yml"><img src="https://github.com/ixchio/terx/actions/workflows/tests.yml/badge.svg" alt="CI Status"></a>
-<a href="https://pypi.org/project/terx/"><img src="https://img.shields.io/pypi/v/terx?style=flat-square&color=00d4aa&label=PyPI" alt="PyPI"></a>
+<a href="https://pypi.org/project/terx/"><img src="https://img.shields.io/pypi/v/terx?style=flat-square&color=00d4aa&label=PyPI&logo=pypi" alt="PyPI"></a>
 <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue?style=flat-square" alt="Python"></a>
 <a href="https://github.com/ixchio/agent-vcr"><img src="https://img.shields.io/badge/Works%20with-Agent%20VCR-purple?style=flat-square" alt="Works with Agent VCR"></a>
