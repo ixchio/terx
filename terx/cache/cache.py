@@ -23,13 +23,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 from terx.cdp.bridge import CDPBridge
-from terx.dom.extractor import DOMSnapshot, hash_similarity
+from terx.dom.extractor import DOMExtractor, DOMSnapshot, hash_similarity
+from terx.agent.healer import SelfHealer
+from terx.vision.ssim import compute_ssim
 
 logger = logging.getLogger(__name__)
 
 # Cache hit threshold — role sequences more similar than this are treated as the same page
 SIMILARITY_THRESHOLD = 0.85
+SSIM_THRESHOLD = 0.85
 VCR_DIR = Path(".vcr")
+SCREENSHOT_DIR = Path(".terx/screenshots")
 
 
 @dataclass
@@ -364,10 +368,48 @@ class RecordingContext:
                 await self._bridge.send(cmd.method, cmd.params)
             except Exception as exc:
                 logger.warning(
-                    "Replay failed at %s: %s — falling back to live execution",
+                    "Replay failed at %s: %s — attempting self-healing",
                     cmd.method, exc
                 )
+                healer = SelfHealer()
+                extractor = DOMExtractor()
+                current_snapshot = await extractor.snapshot(self._bridge)
+                
+                new_params = await healer.heal_command(
+                    failed_method=cmd.method,
+                    old_params=cmd.params,
+                    current_dom=current_snapshot.elements,
+                    task_desc=self._task
+                )
+                
+                if new_params:
+                    logger.info("Self-healing generated new params: %s", new_params)
+                    try:
+                        await self._bridge.send(cmd.method, new_params)
+                        continue # Successfully healed
+                    except Exception as e2:
+                        logger.error("Healed parameters failed: %s", e2)
+                        
                 raise CacheReplayError(cmd.method) from exc
+
+        # --- Visual Audit (SSIM) ---
+        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        screenshot_path = SCREENSHOT_DIR / f"{self._cached_seq.structural_hash}.png"
+        
+        if screenshot_path.exists():
+            try:
+                result = await self._bridge.send("Page.captureScreenshot", {"format": "png"})
+                new_screenshot = __import__('base64').b64decode(result.get("data", ""))
+                old_screenshot = screenshot_path.read_bytes()
+                
+                ssim_score = compute_ssim(old_screenshot, new_screenshot)
+                logger.info("Visual Audit SSIM Score: %.3f", ssim_score)
+                
+                if ssim_score < SSIM_THRESHOLD:
+                    logger.warning("SSIM drift detected (%.3f < %.3f)! UI changed significantly.", ssim_score, SSIM_THRESHOLD)
+                    # We still count it as a hit, but warn the agent.
+            except Exception as e:
+                logger.warning("Failed to run SSIM visual audit: %s", e)
 
         latency = (time.perf_counter() - t0) * 1000
         self._cache.increment_hit(
@@ -414,6 +456,16 @@ class RecordingContext:
                 task_description=self._task,
                 commands=self._recorded_commands,
             )
+            
+            # Save visual baseline for future SSIM checks
+            try:
+                result = await self._bridge.send("Page.captureScreenshot", {"format": "png"})
+                screenshot_bytes = __import__('base64').b64decode(result.get("data", ""))
+                SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                (SCREENSHOT_DIR / f"{self._snapshot.structural_hash}.png").write_bytes(screenshot_bytes)
+            except Exception as e:
+                logger.warning("Failed to save baseline screenshot for SSIM: %s", e)
+            
             # Write .vcr file
             self._cache.write_vcr(
                 session_id=self._session_id,

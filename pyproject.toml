@@ -37,6 +37,13 @@ embeddings = [
     "sentence-transformers>=3.0",
     "numpy>=1.24",
 ]
+vision = [
+    "opencv-python-headless>=4.0",
+    "scikit-image>=0.20",
+]
+healing = [
+    "litellm>=1.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -44,7 +51,7 @@ dev = [
     "rich>=13.0",
     "ruff>=0.4",
 ]
-all = ["terx[embeddings,dev]"]
+all = ["terx[embeddings,vision,healing,dev]"]
 
 [project.scripts]
 terx-server = "terx.server.mcp:main"

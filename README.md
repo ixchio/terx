@@ -85,6 +85,8 @@ Three components:
 
 3. **Muscle Memory Cache** — SQLite-backed. On successful task completion, stores the CDP command sequence keyed by `(domain, dom_hash)`. On future runs, replays directly. Writes `.vcr` files.
 
+4. **Self-Healing Replay & SSIM Audits** — If the DOM drifts, TERX evaluates the new state via LLM to heal the parameters without dropping back to a full agent evaluation. Every replay takes a snapshot and computes the Structural Similarity Index (SSIM) to warn agents of silent visual UI drift.
+
 ---
 
 ## Quick Start
@@ -263,9 +265,10 @@ Search + click (6 cmds) | 1.8s · $0.004 | 21ms · $0.000   | 99%
 - [x] MCP server with FastMCP
 - [x] Framework-adaptive input (React/Vue safe)
 - [x] Screenshot hash refs (no context poisoning)
+- [x] Self-healing replay (fallback to LLM on DOM drift, auto-update cache)
+- [x] Visual Audits via SSIM (Structural Similarity Index)
 - [ ] MutationObserver cache invalidation
 - [ ] Local embedding-based element lookup (`sentence-transformers`)
-- [ ] Self-healing replay (fallback to LLM on DOM drift, auto-update cache)
 - [ ] browser-use integration wrapper
 - [ ] Benchmark suite (100 tasks, published results)
 
@@ -279,6 +282,9 @@ pip install terx
 
 # With local embeddings for semantic element lookup
 pip install "terx[embeddings]"
+
+# With visual SSIM auditing and LLM-powered self-healing
+pip install "terx[vision,healing]"
 ```
 
 ---
