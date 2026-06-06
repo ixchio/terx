@@ -10,7 +10,6 @@ Writes sessions in .vcr format (compatible with Agent VCR).
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging

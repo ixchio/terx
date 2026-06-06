@@ -4,7 +4,6 @@ TERX Core Tests — DOM extraction, cache operations, VCR writer, URL validation
 
 import tempfile
 import json
-from pathlib import Path
 
 from terx.dom.extractor import (
     DOMExtractor, AXElement, hash_similarity,

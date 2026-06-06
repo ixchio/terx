@@ -12,7 +12,6 @@ import base64
 import collections
 import hashlib
 import logging
-import sys
 import time
 from urllib.parse import urlparse
 

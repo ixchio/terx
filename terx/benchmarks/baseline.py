@@ -3,11 +3,8 @@ import http.server
 import socketserver
 import threading
 import time
-import os
 import subprocess
-import json
 from pathlib import Path
-from urllib.parse import urlparse
 
 from terx.cdp.session import BrowserSession
 from terx.cache.cache import MemoryCache, session_for
