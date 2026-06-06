@@ -1,5 +1,5 @@
 """
-TERX MCP Server — exposes the browser and muscle memory cache as MCP tools.
+TERX MCP Server — exposes the browser and memory cache as MCP tools.
 
 Start with: terx-server
 Then connect any MCP client (Claude Desktop, Cursor, etc.)
@@ -19,14 +19,13 @@ from urllib.parse import urlparse
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    print("ERROR: mcp not installed. Run: pip install mcp", file=sys.stderr)
-    sys.exit(1)
+    raise ImportError(
+        "mcp is required for the TERX server. Install with: pip install mcp"
+    )
 
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
-from terx.cache.cache import (
-    MuscleMemorycache
-)
+from terx.cache.cache import MemoryCache
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -57,7 +56,7 @@ def _validate_url(url: str) -> str | None:
 
 
 # ------------------------------------------------------------------ #
-# LRU Screenshot Store (BUG 5 fix — bounded memory)                   #
+# LRU Screenshot Store (bounded memory)                                #
 # ------------------------------------------------------------------ #
 
 class LRUScreenshotStore:
@@ -98,9 +97,9 @@ mcp = FastMCP(
 
 _session: BrowserSession | None = None
 _extractor = DOMExtractor()
-_cache = MuscleMemorycache()
+_cache = MemoryCache()
 _screenshot_store = LRUScreenshotStore(max_size=20)
-_startup_done = False
+_connect_lock = asyncio.Lock()
 
 
 def _get_session() -> BrowserSession:
@@ -113,18 +112,31 @@ def _get_session() -> BrowserSession:
 
 
 async def _ensure_connected() -> None:
-    """Lazy-connect to Chrome on first tool call (avoids event loop conflict)."""
-    global _session, _startup_done
-    if _startup_done:
+    """
+    Lazy-connect to Chrome on first tool call.
+
+    Uses a lock to prevent concurrent connection attempts.
+    If connection fails, _session stays None so retries are possible
+    on the next tool call (fixes the old _startup_done bug where
+    a single failure would brick the server permanently).
+    """
+    global _session
+    if _session is not None:
         return
-    _startup_done = True
-    _session = BrowserSession()
-    try:
-        await _session.start()
-        logger.info("✅ TERX connected to Chrome")
-    except RuntimeError as exc:
-        logger.error("❌ %s", exc)
-        _session = None
+
+    async with _connect_lock:
+        # Double-check after acquiring lock
+        if _session is not None:
+            return
+
+        session = BrowserSession()
+        try:
+            await session.start()
+            _session = session
+            logger.info("✅ TERX connected to Chrome")
+        except RuntimeError as exc:
+            logger.error("❌ %s", exc)
+            # _session stays None — next call will retry
 
 
 # ------------------------------------------------------------------ #
@@ -162,7 +174,6 @@ async def browser_get_state() -> dict:
 @mcp.tool()
 async def browser_navigate(url: str) -> dict:
     """Navigate to a URL. Returns the new page title."""
-    # BUG 10 FIX: URL validation
     error = _validate_url(url)
     if error:
         return {"success": False, "error": error}
@@ -173,13 +184,8 @@ async def browser_navigate(url: str) -> dict:
     t0 = time.perf_counter()
     result = await bridge.send("Page.navigate", {"url": url})
 
-    # Wait for load event instead of blind sleep
-    try:
-        await asyncio.wait_for(
-            bridge.send("Page.loadEventFired"), timeout=10.0
-        )
-    except asyncio.TimeoutError:
-        pass  # Page may not fire load event (SPA)
+    # Wait for page to fully load using proper readyState polling
+    await bridge.wait_for_load(timeout=10.0)
 
     latency = (time.perf_counter() - t0) * 1000
     return {
@@ -220,7 +226,6 @@ async def browser_click(element_id: int) -> dict:
     model = box_result.get("model", {})
     content = model.get("content", [])
 
-    # BUG 3 FIX: content is a flat array [x1,y1, x2,y2, x3,y3, x4,y4] (4 corners)
     if len(content) < 8:
         return {"success": False, "error": "Element has no renderable bounding box"}
 
@@ -265,7 +270,6 @@ async def browser_type(element_id: int, text: str) -> dict:
     await bridge.send("DOM.focus", {"backendNodeId": el.backend_dom_id})
     await asyncio.sleep(0.1)
 
-    # BUG 9 FIX: Target the element by backendNodeId, not document.activeElement.
     # Resolve to a JS object reference first, then set its value.
     resolve_result = await bridge.send("DOM.resolveNode", {
         "backendNodeId": el.backend_dom_id
@@ -273,7 +277,7 @@ async def browser_type(element_id: int, text: str) -> dict:
     object_id = resolve_result.get("object", {}).get("objectId")
 
     if object_id:
-        # Use callFunctionOn to target the EXACT element, not activeElement
+        # Use callFunctionOn to target the EXACT element
         await bridge.send("Runtime.callFunctionOn", {
             "objectId": object_id,
             "functionDeclaration": """
@@ -363,11 +367,25 @@ async def browser_scroll(direction: str = "down", amount: int = 300) -> dict:
     await _ensure_connected()
     session = _get_session()
     bridge = session.bridge()
+
+    # Query actual viewport size instead of hardcoding (760, 400)
+    try:
+        vp_result = await bridge.send_internal("Runtime.evaluate", {
+            "expression": "JSON.stringify({w: window.innerWidth, h: window.innerHeight})",
+            "returnByValue": True,
+        })
+        import json
+        vp = json.loads(vp_result.get("result", {}).get("value", '{"w":1280,"h":720}'))
+        center_x = vp["w"] / 2
+        center_y = vp["h"] / 2
+    except Exception:
+        center_x, center_y = 640, 360  # Safe default
+
     delta_y = amount if direction == "down" else -amount
     await bridge.send("Input.dispatchMouseEvent", {
         "type": "mouseWheel",
-        "x": 760,
-        "y": 400,
+        "x": center_x,
+        "y": center_y,
         "deltaX": 0,
         "deltaY": delta_y,
     })
@@ -390,7 +408,7 @@ async def browser_new_tab(url: str = "about:blank") -> dict:
 
 @mcp.tool()
 async def cache_stats() -> dict:
-    """Show TERX muscle memory cache statistics."""
+    """Show TERX memory cache statistics."""
     stats = _cache.stats()
     return {
         "cached_sequences": stats["total_sequences"],
@@ -416,10 +434,6 @@ def main() -> None:
     print("⚡ TERX MCP Server starting...")
     print("   Connect Chrome: google-chrome --remote-debugging-port=9222")
     print("   Connect MCP client: add terx-server to your MCP config\n")
-
-    # BUG 4 FIX: Don't create a separate event loop for startup.
-    # Instead, lazy-connect on first tool call inside FastMCP's event loop.
-    # This avoids orphaning the WebSocket on a dead loop.
     mcp.run()
 
 

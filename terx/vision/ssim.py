@@ -26,5 +26,5 @@ def compute_ssim(img1_bytes: bytes, img2_bytes: bytes) -> float:
         # Resize img2 to match img1 for comparison (handles minor viewport changes)
         img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
         
-    score, _ = ssim_metric(img1, img2, full=True)
+    score = ssim_metric(img1, img2, full=False)
     return float(score)

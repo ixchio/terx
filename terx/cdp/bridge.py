@@ -53,6 +53,11 @@ class CDPBridge:
         if recorder in self._recorders:
             self._recorders.remove(recorder)
 
+    @property
+    def is_connected(self) -> bool:
+        """Check if the bridge has an active WebSocket connection."""
+        return self._connected and self._ws is not None
+
     # ------------------------------------------------------------------ #
     # Connection lifecycle                                                  #
     # ------------------------------------------------------------------ #
@@ -82,6 +87,7 @@ class CDPBridge:
                 pass
         if self._ws:
             await self._ws.close()
+            self._ws = None
         logger.debug("CDP closed")
 
     async def __aenter__(self) -> "CDPBridge":
@@ -128,7 +134,7 @@ class CDPBridge:
             )
 
         latency_ms = (time.perf_counter() - t0) * 1000
-        
+
         for recorder in self._recorders:
             try:
                 recorder(method, params or {}, result, latency_ms)
@@ -136,6 +142,59 @@ class CDPBridge:
                 logger.error("CDP recorder failed: %s", e)
 
         return result
+
+    async def send_internal(self, method: str, params: dict | None = None) -> dict:
+        """
+        Send a CDP command WITHOUT triggering recorders.
+
+        Used by TERX internals (readyState checks, screenshots, AX tree reads)
+        so that internal bookkeeping commands are never recorded into the cache.
+        """
+        if not self._connected or self._ws is None:
+            raise RuntimeError("CDPBridge is not connected. Call connect() first.")
+
+        self._id_counter += 1
+        cmd_id = self._id_counter
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[cmd_id] = future
+
+        message = json.dumps({"id": cmd_id, "method": method, "params": params or {}})
+        await self._ws.send(message)
+
+        try:
+            return await asyncio.wait_for(future, timeout=self.timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(cmd_id, None)
+            raise asyncio.TimeoutError(
+                f"Internal CDP command '{method}' timed out after {self.timeout}s"
+            )
+
+    # ------------------------------------------------------------------ #
+    # Page load waiting                                                     #
+    # ------------------------------------------------------------------ #
+
+    async def wait_for_load(self, timeout: float = 10.0) -> None:
+        """
+        Wait for document.readyState == 'complete' by polling via Runtime.evaluate.
+
+        Uses send_internal() so these checks are never recorded into the cache.
+        This replaces the broken Page.loadEventFired approach (which is an EVENT,
+        not a command — sending it as a command causes a CDP error).
+        """
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            try:
+                res = await self.send_internal(
+                    "Runtime.evaluate",
+                    {"expression": "document.readyState", "returnByValue": True}
+                )
+                state = res.get("result", {}).get("value")
+                if state == "complete":
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+        logger.debug("wait_for_load timed out after %.1fs (proceeding anyway)", timeout)
 
     # ------------------------------------------------------------------ #
     # Event stream                                                          #

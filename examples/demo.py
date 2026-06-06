@@ -1,5 +1,5 @@
 """
-Demo: TERX muscle memory cache in action.
+Demo: TERX memory cache in action.
 
 Run 1: agent navigates and logs in — TERX records the CDP commands.
 Run 2: same task — TERX replays them directly, zero LLM calls.
@@ -10,7 +10,7 @@ Writes a .vcr file readable by Agent VCR's VCRPlayer.
 import asyncio
 
 from terx.cdp.session import BrowserSession
-from terx.cache.cache import MuscleMemorycache, session_for
+from terx.cache.cache import MemoryCache, session_for
 
 
 async def simulate_login(session: BrowserSession) -> None:
@@ -31,7 +31,7 @@ async def simulate_login(session: BrowserSession) -> None:
 
 
 async def main():
-    cache = MuscleMemorycache()
+    cache = MemoryCache()
 
     print("🌐 Starting Chrome session...")
     async with BrowserSession() as session:

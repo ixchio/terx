@@ -33,14 +33,26 @@ INTERACTABLE_ROLES = {
 
 @dataclass
 class AXElement:
-    """A single interactable element from the accessibility tree."""
+    """
+    A single interactable element from the accessibility tree.
+
+    ``semantic_name``  — the stable aria-label/placeholder (used in cache hash)
+    ``current_value``  — the live form-field value (volatile; excluded from hash)
+    ``label``          — display label: semantic_name if set, else current_value
+    """
     id: int                          # stable deterministic ID (hash-based)
     role: str
-    label: str
+    semantic_name: str               # stable aria-name / placeholder
+    current_value: str               # live value (spinbutton, combobox selected)
     node_id: str                     # Chrome AX node ID
     backend_dom_id: int              # Chrome backend DOM node ID
     bounds: dict | None = None       # {x, y, width, height} if available
     depth: int = 0
+
+    @property
+    def label(self) -> str:
+        """Best human-readable label: prefer semantic name, fall back to value."""
+        return self.semantic_name or self.current_value
 
 
 @dataclass
@@ -107,45 +119,52 @@ class DOMExtractor:
             role_sequence=role_seq,
         )
 
+    # Roles whose current runtime value can change without DOM structure change
+    _VALUE_VOLATILE_ROLES = {"spinbutton", "slider", "scrollbar", "combobox", "listbox"}
+
     def _extract_interactable(self, nodes: list[dict]) -> list[AXElement]:
         """Filter to interactable nodes and assign stable deterministic IDs."""
         elements: list[AXElement] = []
 
         for node in nodes:
-            role = self._get_value(node.get("role"))
+            role = self._get_value(node.get("role")).lower()
             if role not in INTERACTABLE_ROLES:
                 continue
 
-            label = (
+            # Stable semantic name (aria-label, placeholder, description)
+            semantic_name = (
                 self._get_value(node.get("name"))
                 or self._get_value(node.get("description"))
                 or ""
-            )
+            ).strip()[:80]
 
-            # Skip nodes with no meaningful label
-            if not label.strip() and role not in ("textbox", "searchbox"):
+            # Live form-field value (excluded from structural hash)
+            current_value = self._get_value(node.get("value")).strip()[:80]
+
+            # Skip nodes with no usable identity
+            has_identity = bool(semantic_name) or bool(current_value)
+            if not has_identity and role not in ("textbox", "searchbox", "combobox", "listbox"):
                 continue
 
-            label_clean = label.strip()[:80]
             parent_id = node.get("parentId", "")
 
-            # BUG 8 FIX: Deterministic ID based on role + label + parent
-            # This is stable across snapshots — same element always gets same ID.
-            # Using a hash mod to keep IDs in reasonable range.
-            id_input = f"{role}:{label_clean}:{parent_id}".encode()
+            # Stable ID based on role + semantic_name (NOT live value — stays
+            # constant even if the user typed something into a form field).
+            id_input = f"{role}:{semantic_name}:{parent_id}".encode()
             stable_id = int(hashlib.md5(id_input).hexdigest()[:8], 16) % 100_000
 
             el = AXElement(
                 id=stable_id,
                 role=role,
-                label=label_clean,
+                semantic_name=semantic_name,
+                current_value=current_value,
                 node_id=node.get("nodeId", ""),
                 backend_dom_id=node.get("backendDOMNodeId", 0),
                 depth=len(str(parent_id).split(".")) if parent_id else 0,
             )
             elements.append(el)
 
-        # Deduplicate IDs (hash collision fallback)
+        # Deduplicate stable IDs (hash collision fallback)
         seen_ids: set[int] = set()
         for el in elements:
             while el.id in seen_ids:
@@ -169,18 +188,19 @@ class DOMExtractor:
 
 def _build_role_sequence(elements: list[AXElement]) -> str:
     """
-    Build the canonical role sequence string for similarity comparison.
+    Build the canonical role sequence string for cache lookup.
 
-    What we include (stable across minor UI changes):
+    What we include (stable across reruns):
       - Role name
-      - Label prefix (first 20 chars — ignores dynamic counters like "Inbox (47)")
+      - ``semantic_name`` prefix — aria-label / placeholder (NEVER the live value)
       - Depth
 
-    What we IGNORE:
+    What we deliberately EXCLUDE:
+      - ``current_value`` — live form-field value (changes between cold/warm runs)
       - CSS classes, element IDs, data-* attributes, pixel positions
     """
     parts = [
-        f"{el.role}:{el.label[:20]}:{el.depth}"
+        f"{el.role}:{el.semantic_name[:20]}:{el.depth}"
         for el in elements
     ]
     return "|".join(parts)
