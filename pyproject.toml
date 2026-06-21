@@ -16,7 +16,7 @@ keywords = [
     "agent-memory", "semantic-cache", "browser-use",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
@@ -50,8 +50,13 @@ dev = [
     "pytest-benchmark>=4.0",
     "rich>=13.0",
     "ruff>=0.4",
+    "python-dotenv>=1.0",
 ]
-all = ["terx[embeddings,vision,healing,dev]"]
+benchmark = [
+    "groq>=0.9",
+    "python-dotenv>=1.0",
+]
+all = ["terx[embeddings,vision,healing,dev,benchmark]"]
 
 [project.scripts]
 terx-server    = "terx.server.mcp:main"
@@ -59,9 +64,11 @@ terx-bench     = "terx.benchmarks.baseline:main"
 terx-bench-real = "terx.benchmarks.real_agent:main"
 
 [project.urls]
-Homepage   = "https://github.com/ixchio/terx"
-Repository = "https://github.com/ixchio/terx"
-Issues     = "https://github.com/ixchio/terx/issues"
+Homepage      = "https://github.com/ixchio/terx"
+Repository    = "https://github.com/ixchio/terx"
+Documentation = "https://github.com/ixchio/terx/tree/main/docs"
+Issues        = "https://github.com/ixchio/terx/issues"
+Changelog     = "https://github.com/ixchio/terx/blob/main/docs/changelog.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["terx"]

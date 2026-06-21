@@ -10,3 +10,10 @@ build/
 .venv/
 *.db
 LAUNCH.md
+
+# Credentials — never commit these
+.env
+*.env.local
+*.env.*.local
+.envrc
+secrets.toml

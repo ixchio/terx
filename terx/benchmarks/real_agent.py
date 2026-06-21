@@ -3,14 +3,20 @@ TERX Real Agent Benchmark
 =========================
 Runs a genuine LLM agent loop (Groq → openai/gpt-oss-120b) against the same
 10 tasks as baseline.py. Measures real wall-clock time and real token counts
-from API response headers — no models, no constants.
-
-Then runs TERX warm replay on the same tasks and compares.
+from API response headers — no modeled constants.
 
 Usage:
+    # Option 1: .env file (recommended)
+    cp .env.example .env          # fill in GROQ_API_KEY
+    python -m terx.benchmarks.real_agent
+
+    # Option 2: inline env var
     GROQ_API_KEY=gsk_... python -m terx.benchmarks.real_agent
-    # or
+
+    # Option 3: entry point
     terx-bench-real
+
+Get a free Groq API key at https://console.groq.com
 """
 
 from __future__ import annotations
@@ -25,11 +31,19 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
 
+# Load .env if present (pip install python-dotenv, or ignored if not installed)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from groq import Groq
 
 from terx.cdp.session import BrowserSession
 from terx.cache.cache import MemoryCache, session_for
 from terx.dom.extractor import DOMExtractor
+
 
 # ------------------------------------------------------------------ #
 # Config                                                               #
