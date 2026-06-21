@@ -5,25 +5,31 @@ on:
     branches: [main]
     paths:
       - "docs/**"
-      - "mkdocs.yml"
       - "README.md"
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
         with:
-          python-version: "3.12"
-          cache: "pip"
+          path: docs/
 
-      - name: Install MkDocs
-        run: pip install mkdocs-material
-
-      - name: Deploy to GitHub Pages
-        run: mkdocs gh-deploy --force
+      - id: deployment
+        uses: actions/deploy-pages@v4

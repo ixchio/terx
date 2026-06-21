@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TERX — browser agent memory</title>
+<meta name="description" content="Memory layer for browser agents. Run 1 costs tokens. Run 2 costs nothing.">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg2: #111111;
+    --border: #1e1e1e;
+    --text: #c8c8c8;
+    --dim: #555;
+    --green: #3ddc84;
+    --amber: #f5a623;
+    --red: #ff5f5f;
+    --white: #efefef;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--bg); color: var(--text); font-family: 'Berkeley Mono','JetBrains Mono','Fira Code','Courier New',monospace; font-size: 14px; line-height: 1.7; }
+  body { max-width: 860px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* NAV */
+  nav { border-bottom: 1px solid var(--border); padding: 18px 0; display: flex; align-items: center; gap: 32px; }
+  nav .logo { color: var(--white); font-size: 15px; letter-spacing: .05em; text-decoration: none; }
+  nav .logo span { color: var(--green); }
+  nav a { color: var(--dim); text-decoration: none; font-size: 13px; }
+  nav a:hover { color: var(--text); }
+  nav .right { margin-left: auto; display: flex; gap: 24px; }
+
+  /* HERO */
+  .hero { padding: 60px 0 48px; border-bottom: 1px solid var(--border); }
+  .hero h1 { font-size: 13px; color: var(--dim); font-weight: normal; margin-bottom: 20px; }
+  .tagline { font-size: 28px; color: var(--white); line-height: 1.3; font-weight: normal; margin-bottom: 16px; }
+  .tagline em { color: var(--green); font-style: normal; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 32px; max-width: 540px; }
+  .install-box { background: var(--bg2); border: 1px solid var(--border); padding: 14px 20px; display: inline-flex; align-items: center; gap: 16px; }
+  .install-box .prompt { color: var(--dim); }
+  .install-box .cmd { color: var(--amber); }
+  .badges { margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .badge { font-size: 11px; padding: 3px 10px; border: 1px solid var(--border); color: var(--dim); }
+  .badge.green { border-color: #1a3a25; color: var(--green); }
+
+  /* NUMBERS */
+  .numbers { padding: 48px 0; border-bottom: 1px solid var(--border); }
+  .section-label { font-size: 11px; color: var(--dim); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 28px; }
+  .stat-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); margin-bottom: 32px; }
+  .stat { background: var(--bg2); padding: 20px; }
+  .stat .val { font-size: 30px; color: var(--white); margin-bottom: 4px; }
+  .stat .val em { color: var(--green); font-style: normal; }
+  .stat .lbl { font-size: 11px; color: var(--dim); }
+
+  /* TABLE */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: normal; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+  td.hit { color: var(--green); }
+  td.num { color: var(--white); }
+  tr:last-child td { border-bottom: none; color: var(--white); font-weight: bold; }
+  .zero { color: var(--green); }
+
+  /* SECTIONS */
+  section { padding: 48px 0; border-bottom: 1px solid var(--border); }
+  h2 { font-size: 11px; color: var(--dim); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 24px; font-weight: normal; }
+  h3 { font-size: 14px; color: var(--white); margin-bottom: 8px; font-weight: normal; }
+  p { color: var(--text); margin-bottom: 14px; max-width: 620px; }
+  pre { background: var(--bg2); border: 1px solid var(--border); padding: 18px 20px; overflow-x: auto; margin: 16px 0; line-height: 1.6; }
+  code { color: var(--text); }
+  .kw { color: var(--amber); }
+  .str { color: var(--green); }
+  .cm { color: var(--dim); }
+  .fn { color: #8ac8ff; }
+  .hl { color: var(--white); }
+  .tab-bar { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+  .tab { padding: 10px 18px; cursor: pointer; font-size: 12px; color: var(--dim); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab.active { color: var(--white); border-bottom-color: var(--green); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* HOW IT WORKS */
+  .steps { display: flex; flex-direction: column; gap: 0; }
+  .step { display: flex; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+  .step:last-child { border-bottom: none; }
+  .step-n { color: var(--dim); font-size: 11px; min-width: 24px; padding-top: 2px; }
+  .step-body h3 { font-size: 13px; }
+  .step-body p { font-size: 13px; margin-bottom: 0; color: var(--dim); max-width: 100%; }
+
+  /* ASCII diagram */
+  .ascii { color: var(--dim); padding: 20px; background: var(--bg2); border: 1px solid var(--border); font-size: 12px; line-height: 1.5; }
+  .ascii .hl { color: var(--text); }
+  .ascii .grn { color: var(--green); }
+
+  /* FOOTER */
+  footer { padding: 32px 0; display: flex; gap: 24px; align-items: center; }
+  footer a { color: var(--dim); text-decoration: none; font-size: 12px; }
+  footer a:hover { color: var(--text); }
+  footer .sep { color: var(--border); }
+  @media (max-width: 600px) {
+    .stat-row { grid-template-columns: 1fr; }
+    .tagline { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="logo" href="#"><span>terx</span></a>
+  <a href="#quickstart">quickstart</a>
+  <a href="#benchmarks">benchmarks</a>
+  <a href="#how">how it works</a>
+  <div class="right">
+    <a href="https://github.com/ixchio/terx">github ↗</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>// memory layer for browser agents</h1>
+  <div class="tagline">Your agent rediscovers the login button<br>on <em>every single run</em>.</div>
+  <p class="sub">TERX records what it did the first time. Every run after that replays in milliseconds — no LLM, no tokens, no waiting.</p>
+  <div class="install-box">
+    <span class="prompt">$</span>
+    <span class="cmd">pip install terx</span>
+  </div>
+  <div class="badges">
+    <span class="badge green">10/10 cache hits</span>
+    <span class="badge green">182.7x speedup (measured)</span>
+    <span class="badge">MIT</span>
+    <span class="badge">Python 3.11+</span>
+    <span class="badge">Raw CDP — no Playwright</span>
+  </div>
+</div>
+
+<!-- NUMBERS -->
+<div class="numbers" id="benchmarks">
+  <div class="section-label">// real benchmark — Groq API, openai/gpt-oss-120b, measured</div>
+  <div class="stat-row">
+    <div class="stat">
+      <div class="val"><em>182.7x</em></div>
+      <div class="lbl">average speedup on warm runs</div>
+    </div>
+    <div class="stat">
+      <div class="val"><em>100%</em></div>
+      <div class="lbl">token savings on cache hits</div>
+    </div>
+    <div class="stat">
+      <div class="val"><em>10/10</em></div>
+      <div class="lbl">cache hit rate across task suite</div>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>task</th>
+        <th>llm steps</th>
+        <th>agent (cold)</th>
+        <th>terx (warm)</th>
+        <th>speedup</th>
+        <th>tokens</th>
+        <th>cost saved</th>
+        <th>hit</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>User Login Flow</td><td>4</td><td>2.93s · $0.0076</td><td class="zero">0.078s · $0.000</td><td class="num">37.7x</td><td>2,090</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Search and Filter</td><td>5</td><td>3.99s · $0.0136</td><td class="zero">0.101s · $0.000</td><td class="num">39.7x</td><td>3,533</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Multi-step Signup</td><td>2</td><td>1.54s · $0.0045</td><td class="zero">0.062s · $0.000</td><td class="num">25.0x</td><td>1,035</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>E-commerce Product</td><td>5</td><td>25.97s · $0.0161</td><td class="zero">0.091s · $0.000</td><td class="num">286x</td><td>3,811</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Settings Toggles</td><td>4</td><td>16.01s · $0.0095</td><td class="zero">0.103s · $0.000</td><td class="num">155.9x</td><td>2,451</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Data Table Pagination</td><td>12</td><td>90.84s · $0.0567</td><td class="zero">0.259s · $0.000</td><td class="num">350.4x</td><td>12,479</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Support Ticket</td><td>4</td><td>15.40s · $0.0078</td><td class="zero">0.101s · $0.000</td><td class="num">152.2x</td><td>2,135</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Fuzzy Search</td><td>3</td><td>11.85s · $0.0062</td><td class="zero">0.089s · $0.000</td><td class="num">132.9x</td><td>1,459</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Profile Update</td><td>3</td><td>12.35s · $0.0086</td><td class="zero">0.094s · $0.000</td><td class="num">131.2x</td><td>1,854</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>Complex Form</td><td>4</td><td>17.74s · $0.0082</td><td class="zero">0.110s · $0.000</td><td class="num">161.5x</td><td>2,146</td><td class="green">100%</td><td class="hit">✓</td></tr>
+      <tr><td>total / average</td><td>—</td><td>198.62s · $0.1388</td><td class="zero">1.087s · $0.000</td><td class="num">182.7x</td><td>32,993</td><td class="green">100%</td><td class="hit">10/10</td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:16px;font-size:12px;color:var(--dim);">Reproduce: <code style="color:var(--amber)">GROQ_API_KEY=... python -m terx.benchmarks.real_agent</code></p>
+</div>
+
+<!-- QUICK START -->
+<section id="quickstart">
+  <h2>// quickstart</h2>
+  <div class="tab-bar">
+    <div class="tab active" onclick="switchTab(event,'mcp')">MCP server</div>
+    <div class="tab" onclick="switchTab(event,'lib')">Python library</div>
+    <div class="tab" onclick="switchTab(event,'bench')">Run benchmark</div>
+  </div>
+
+  <div class="tab-content active" id="tab-mcp">
+    <h3>Works with Claude Desktop, Cursor, Windsurf</h3>
+    <p>Start Chrome with debugging enabled:</p>
+    <pre><code><span class="cm"># close all Chrome windows first</span>
+<span class="hl">google-chrome --remote-debugging-port=9222 --no-first-run</span></code></pre>
+    <p>Start TERX:</p>
+    <pre><code><span class="kw">pip install</span> terx
+<span class="hl">terx-server</span></code></pre>
+    <p>Add to your MCP config:</p>
+    <pre><code><span class="cm">// claude_desktop_config.json</span>
+{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"terx"</span>: { <span class="str">"command"</span>: <span class="str">"terx-server"</span> }
+  }
+}</code></pre>
+    <p style="color:var(--dim);font-size:13px;">Every browser task your agent runs is now cached. First run = normal. Every repeat = free.</p>
+  </div>
+
+  <div class="tab-content" id="tab-lib">
+    <h3>Wrap your existing agent — 3 lines</h3>
+    <pre><code><span class="kw">from</span> terx.cdp.session <span class="kw">import</span> BrowserSession
+<span class="kw">from</span> terx.cache.cache <span class="kw">import</span> MemoryCache, session_for
+
+cache = <span class="fn">MemoryCache</span>()
+
+<span class="kw">async with</span> <span class="fn">BrowserSession</span>() <span class="kw">as</span> session:
+    bridge = session.<span class="fn">bridge</span>()
+
+    <span class="kw">async with</span> <span class="fn">session_for</span>(cache, bridge, <span class="str">"login to salesforce"</span>) <span class="kw">as</span> ctx:
+        <span class="kw">if</span> ctx.hit:
+            <span class="kw">await</span> ctx.<span class="fn">replay</span>()          <span class="cm"># 0 tokens, ~80ms</span>
+        <span class="kw">else</span>:
+            <span class="kw">await</span> your_agent.<span class="fn">run</span>(...)   <span class="cm"># agent runs, TERX records</span></code></pre>
+  </div>
+
+  <div class="tab-content" id="tab-bench">
+    <h3>Run the real LLM benchmark yourself</h3>
+    <pre><code><span class="cm"># free key at console.groq.com</span>
+<span class="kw">pip install</span> <span class="str">"terx[benchmark]"</span>
+<span class="kw">cp</span> .env.example .env   <span class="cm"># fill in GROQ_API_KEY</span>
+<span class="kw">python -m</span> terx.benchmarks.real_agent</code></pre>
+    <p style="color:var(--dim);font-size:13px;">Runs 10 real tasks. Prints the table above with your measured numbers.</p>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <h2>// how it works</h2>
+  <pre class="ascii">
+  ┌─────────────────────────────────────────────────┐
+  │                  your agent                      │
+  │          (browser-use / Claude / anything)        │
+  └───────────────────────┬─────────────────────────┘
+                          │
+  ┌───────────────────────▼─────────────────────────┐
+  │              <span class="grn">TERX session_for()</span>                │
+  │  on miss → records CDP commands                  │
+  │  on hit  → replays them directly                 │
+  └───────────────────────┬─────────────────────────┘
+                          │ raw WebSocket
+  ┌───────────────────────▼─────────────────────────┐
+  │                  <span class="hl">Chrome</span>                          │
+  │           (remote debugging port 9222)            │
+  └─────────────────────────────────────────────────┘</pre>
+
+  <div class="steps" style="margin-top:24px;">
+    <div class="step">
+      <div class="step-n">01</div>
+      <div class="step-body">
+        <h3>CDP Bridge</h3>
+        <p>Raw asyncio WebSocket to Chrome. No Playwright subprocess. &lt;50ms startup, ~2MB RAM.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">02</div>
+      <div class="step-body">
+        <h3>DOM Extractor</h3>
+        <p>Reads Chrome's Accessibility Tree (not raw HTML). Computes a fuzzy structural hash — survives CSS changes and A/B tests without breaking cache hits.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">03</div>
+      <div class="step-body">
+        <h3>Muscle Memory Cache</h3>
+        <p>SQLite. On success: stores CDP command sequence keyed by (domain, dom_hash, task). On future runs: replays directly. INSERT OR IGNORE — first successful recording is canonical.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">04</div>
+      <div class="step-body">
+        <h3>Dynamic node ID translation</h3>
+        <p>Chrome assigns new backendNodeIds each session. TERX re-snapshots on replay and maps old IDs to current equivalents by role + label matching.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- MCP TOOLS -->
+<section>
+  <h2>// mcp tools</h2>
+  <table>
+    <thead>
+      <tr><th>tool</th><th>what it does</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>browser_get_state</code></td><td>AX tree snapshot — stable element IDs, no hallucination-prone HTML</td></tr>
+      <tr><td><code>browser_navigate</code></td><td>Navigate to URL (scheme-validated, blocks javascript: data: file:)</td></tr>
+      <tr><td><code>browser_click</code></td><td>Click element by stable ID</td></tr>
+      <tr><td><code>browser_type</code></td><td>Type into input — fires native setter (React/Vue/Svelte safe)</td></tr>
+      <tr><td><code>browser_screenshot</code></td><td>Returns hash ref, not base64 — no context window poisoning</td></tr>
+      <tr><td><code>browser_scroll</code></td><td>Scroll up/down</td></tr>
+      <tr><td><code>browser_new_tab</code></td><td>Open new tab</td></tr>
+      <tr><td><code>cache_stats</code></td><td>Hit rate, total savings, unique domains cached</td></tr>
+      <tr><td><code>cache_invalidate</code></td><td>Clear cache for a domain when the UI ships a redesign</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <a href="https://github.com/ixchio/terx">github</a>
+  <span class="sep">|</span>
+  <a href="https://pypi.org/project/terx/">pypi</a>
+  <span class="sep">|</span>
+  <a href="https://github.com/ixchio/terx/blob/main/docs/changelog.md">changelog</a>
+  <span class="sep">|</span>
+  <span style="color:var(--dim);font-size:12px;margin-left:auto;">MIT · python 3.11+</span>
+</footer>
+
+<script>
+function switchTab(e, id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  e.currentTarget.classList.add('active');
+  document.getElementById('tab-' + id).classList.add('active');
+}
+</script>
+</body>
+</html>
