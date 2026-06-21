@@ -6,8 +6,11 @@ import tempfile
 import json
 
 from terx.dom.extractor import (
-    DOMExtractor, AXElement, hash_similarity,
-    _structural_hash, _build_role_sequence,
+    DOMExtractor,
+    AXElement,
+    hash_similarity,
+    _structural_hash,
+    _build_role_sequence,
 )
 from terx.cache.cache import MemoryCache, MuscleMemorycache, CDPCommand, _task_key
 
@@ -16,12 +19,31 @@ from terx.cache.cache import MemoryCache, MuscleMemorycache, CDPCommand, _task_k
 # DOM Extractor Tests                                                    #
 # ------------------------------------------------------------------ #
 
+
 def test_deterministic_ids():
     """Element IDs must be stable across repeated extractions."""
     nodes = [
-        {"role": "textbox", "name": "Email", "nodeId": "1", "backendDOMNodeId": 101, "parentId": "p1"},
-        {"role": "textbox", "name": "Password", "nodeId": "2", "backendDOMNodeId": 102, "parentId": "p1"},
-        {"role": "button", "name": "Submit", "nodeId": "3", "backendDOMNodeId": 103, "parentId": "p1"},
+        {
+            "role": "textbox",
+            "name": "Email",
+            "nodeId": "1",
+            "backendDOMNodeId": 101,
+            "parentId": "p1",
+        },
+        {
+            "role": "textbox",
+            "name": "Password",
+            "nodeId": "2",
+            "backendDOMNodeId": 102,
+            "parentId": "p1",
+        },
+        {
+            "role": "button",
+            "name": "Submit",
+            "nodeId": "3",
+            "backendDOMNodeId": 103,
+            "parentId": "p1",
+        },
     ]
     extractor = DOMExtractor()
     elements = extractor._extract_interactable(nodes)
@@ -52,8 +74,24 @@ def test_id_collision_resolution():
 def test_role_sequence_stable():
     """Role sequences should be deterministic and use semantic_name (not live value)."""
     elements = [
-        AXElement(id=1, role="button", semantic_name="Submit", current_value="", node_id="1", backend_dom_id=1, depth=1),
-        AXElement(id=2, role="textbox", semantic_name="Email", current_value="", node_id="2", backend_dom_id=2, depth=1),
+        AXElement(
+            id=1,
+            role="button",
+            semantic_name="Submit",
+            current_value="",
+            node_id="1",
+            backend_dom_id=1,
+            depth=1,
+        ),
+        AXElement(
+            id=2,
+            role="textbox",
+            semantic_name="Email",
+            current_value="",
+            node_id="2",
+            backend_dom_id=2,
+            depth=1,
+        ),
     ]
     seq1 = _build_role_sequence(elements)
     seq2 = _build_role_sequence(elements)
@@ -74,6 +112,7 @@ def test_structural_hash_deterministic():
 # ------------------------------------------------------------------ #
 # Hash Similarity Tests                                                  #
 # ------------------------------------------------------------------ #
+
 
 def test_hash_similarity_identical():
     seq_a = "button:Submit:1|textbox:Email:1"
@@ -111,6 +150,7 @@ def test_hash_similarity_insertion():
 # Cache Operation Tests                                                  #
 # ------------------------------------------------------------------ #
 
+
 def test_cache_store_and_lookup():
     with tempfile.TemporaryDirectory() as tmp:
         cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
@@ -140,10 +180,20 @@ def test_cache_task_uniqueness():
     with tempfile.TemporaryDirectory() as tmp:
         cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
 
-        cache.store("example.com", "h1", "btn:Login:1", "login to app",
-                     [CDPCommand("Input.click", {}, {}, 10.0)])
-        cache.store("example.com", "h1", "btn:Login:1", "reset password",
-                     [CDPCommand("Input.type", {}, {}, 20.0)])
+        cache.store(
+            "example.com",
+            "h1",
+            "btn:Login:1",
+            "login to app",
+            [CDPCommand("Input.click", {}, {}, 10.0)],
+        )
+        cache.store(
+            "example.com",
+            "h1",
+            "btn:Login:1",
+            "reset password",
+            [CDPCommand("Input.type", {}, {}, 20.0)],
+        )
 
         hit1 = cache.lookup("example.com", "btn:Login:1", "login to app")
         assert hit1 is not None
@@ -197,9 +247,60 @@ def test_backwards_compat_alias():
     assert MuscleMemorycache is MemoryCache
 
 
+def test_cache_multiple_dom_versions_same_task():
+    """Multiple DOM structures for the same task should be stored separately."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+
+        # Store first version (original DOM)
+        commands_v1 = [CDPCommand("Input.click", {"x": 10}, {}, 10.0)]
+        cache.store("example.com", "hash_v1", "btn:Login:1", "login to app", commands_v1)
+
+        # Store second version (DOM changed slightly - different structural hash)
+        commands_v2 = [CDPCommand("Input.click", {"x": 20}, {}, 15.0)]
+        cache.store("example.com", "hash_v2", "btn:Login:1", "login to app", commands_v2)
+
+        # Both should be retrievable via lookup with their respective role sequences
+        hit_v1 = cache.lookup("example.com", "btn:Login:1", "login to app")
+        # The lookup uses fuzzy matching, so it will find the best match
+        # Since we're using the same role_sequence for both, it will pick one
+        assert hit_v1 is not None
+
+        # Verify both are in the database
+        db = cache._ensure_db()
+        rows = db.execute(
+            "SELECT structural_hash FROM sequences WHERE domain = ? AND task_key = ?",
+            ("example.com", _task_key("login to app")),
+        ).fetchall()
+        hashes = {row[0] for row in rows}
+        assert "hash_v1" in hashes
+        assert "hash_v2" in hashes
+        assert len(hashes) == 2  # Both versions preserved
+
+
+def test_cache_store_preserves_first_version():
+    """INSERT OR IGNORE preserves the first successful sequence for same hash."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+
+        # Store first version
+        commands_v1 = [CDPCommand("Input.click", {"x": 10}, {}, 10.0)]
+        cache.store("example.com", "same_hash", "btn:Login:1", "login to app", commands_v1)
+
+        # Try to store second version with same hash - should be ignored
+        commands_v2 = [CDPCommand("Input.click", {"x": 999}, {}, 999.0)]
+        cache.store("example.com", "same_hash", "btn:Login:1", "login to app", commands_v2)
+
+        # Lookup should return the FIRST version (x=10)
+        hit = cache.lookup("example.com", "btn:Login:1", "login to app")
+        assert hit is not None
+        assert hit.commands[0].params["x"] == 10  # First version preserved
+
+
 # ------------------------------------------------------------------ #
 # Task Key Tests                                                        #
 # ------------------------------------------------------------------ #
+
 
 def test_task_key_normalization():
     """Task keys should be case-insensitive and strip whitespace."""
@@ -215,6 +316,7 @@ def test_task_key_different_tasks():
 # ------------------------------------------------------------------ #
 # VCR Writer Tests                                                      #
 # ------------------------------------------------------------------ #
+
 
 def test_vcr_write_format():
     """VCR files should be valid JSONL with session header + frames."""
@@ -256,6 +358,7 @@ def test_vcr_write_format():
 # URL Validation Tests                                                  #
 # ------------------------------------------------------------------ #
 
+
 def test_url_validation_blocks_dangerous_schemes():
     from terx.server.mcp import _validate_url
 
@@ -283,6 +386,7 @@ def test_url_validation_blocks_schemeless():
 # ------------------------------------------------------------------ #
 # LRU Screenshot Store Tests                                            #
 # ------------------------------------------------------------------ #
+
 
 def test_lru_store_basic():
     from terx.server.mcp import LRUScreenshotStore
@@ -319,12 +423,13 @@ def test_lru_store_access_refreshes():
     store.put("c", b"img_c")  # Should evict "b" (oldest untouched)
 
     assert store.get("a") == b"img_a"  # Still alive
-    assert store.get("b") is None      # Evicted
+    assert store.get("b") is None  # Evicted
 
 
 # ------------------------------------------------------------------ #
 # ReplayCostLedger Tests                                                #
 # ------------------------------------------------------------------ #
+
 
 def test_ledger_hit_str():
     from terx.cache.cache import ReplayCostLedger
@@ -357,3 +462,67 @@ def test_ledger_miss_str():
     s = str(ledger)
     assert "Cache MISS" in s
     assert "run #1" in s
+
+
+# ------------------------------------------------------------------ #
+# CDP Bridge Connection Timeout Tests                                  #
+# ------------------------------------------------------------------ #
+
+
+def test_cdp_bridge_connect_timeout_param():
+    """CDPBridge should accept connect_timeout parameter."""
+    from terx.cdp.bridge import CDPBridge
+
+    bridge = CDPBridge("ws://localhost:9222/test", connect_timeout=5.0)
+    assert bridge.connect_timeout == 5.0
+
+    # Default should be 10.0
+    bridge2 = CDPBridge("ws://localhost:9222/test")
+    assert bridge2.connect_timeout == 10.0
+
+
+def test_browser_session_connect_timeout_param():
+    """BrowserSession should accept and forward connect_timeout."""
+    from terx.cdp.session import BrowserSession
+
+    session = BrowserSession(connect_timeout=3.0)
+    assert session.connect_timeout == 3.0
+
+    # Default should be 10.0
+    session2 = BrowserSession()
+    assert session2.connect_timeout == 10.0
+
+
+# ------------------------------------------------------------------ #
+# TERX Server Tests                                                    #
+# ------------------------------------------------------------------ #
+
+
+def test_terx_server_instantiation():
+    """TERXServer should be instantiable with custom config."""
+    from terx.server.mcp import TERXServer
+    from terx.cache.cache import MemoryCache
+
+    cache = MemoryCache(db_path="/tmp/test_terx_server.db")
+    server = TERXServer(cache=cache, host="localhost", port=9223, connect_timeout=5.0)
+
+    assert server._host == "localhost"
+    assert server._port == 9223
+    assert server._connect_timeout == 5.0
+    assert server.cache is cache
+    assert hasattr(server, "mcp")
+
+
+def test_terx_server_backwards_compat():
+    """Module-level exports should work for backwards compatibility."""
+    from terx.server.mcp import mcp, main, _validate_url, LRUScreenshotStore
+
+    assert mcp is not None
+    assert callable(main)
+    assert callable(_validate_url)
+    assert LRUScreenshotStore is not None
+
+    # Test LRU store
+    store = LRUScreenshotStore(max_size=2)
+    store.put("a", b"img_a")
+    assert store.get("a") == b"img_a"

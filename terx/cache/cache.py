@@ -46,6 +46,7 @@ MUTATING_CDP_METHODS = {
 @dataclass
 class CDPCommand:
     """A single recorded CDP command."""
+
     method: str
     params: dict
     result: dict
@@ -56,6 +57,7 @@ class CDPCommand:
 @dataclass
 class CachedSequence:
     """A cached action sequence for one successful task."""
+
     domain: str
     structural_hash: str
     task_key: str
@@ -69,6 +71,7 @@ class CachedSequence:
 @dataclass
 class ReplayCostLedger:
     """Tracks savings from a cache replay."""
+
     task_description: str
     hit: bool
     commands_replayed: int
@@ -122,12 +125,31 @@ class MemoryCache:
     # Setup                                                                 #
     # ------------------------------------------------------------------ #
 
+    # Schema version for migrations
+    SCHEMA_VERSION = 2
+
     def _ensure_db(self) -> sqlite3.Connection:
         if self._db is not None:
             return self._db
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.db_path, check_same_thread=False)
         db.execute("PRAGMA journal_mode=WAL")
+
+        # Create schema version table
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
+            )
+        """)
+
+        # Get current schema version
+        cursor = db.execute("SELECT version FROM schema_version")
+        row = cursor.fetchone()
+        current_version = row[0] if row else 0
+
+        if current_version < self.SCHEMA_VERSION:
+            self._migrate_db(db, current_version)
+
         db.execute("""
             CREATE TABLE IF NOT EXISTS sequences (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,12 +165,26 @@ class MemoryCache:
                 UNIQUE(domain, structural_hash, task_key)
             )
         """)
-        db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_domain_task ON sequences(domain, task_key)"
-        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_domain_task ON sequences(domain, task_key)")
         db.commit()
         self._db = db
         return db
+
+    def _migrate_db(self, db: sqlite3.Connection, from_version: int) -> None:
+        """Migrate database schema from from_version to SCHEMA_VERSION."""
+        if from_version < 1:
+            # Version 1: initial schema (already created above)
+            db.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (1)")
+
+        if from_version < 2:
+            # Version 2: No changes to sequences table, just bump version
+            # The behavioral change is in store() using INSERT OR IGNORE
+            db.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (2)")
+
+        db.commit()
+        logger.info(
+            "Migrated cache database from version %d to %d", from_version, self.SCHEMA_VERSION
+        )
 
     # ------------------------------------------------------------------ #
     # Core cache operations                                                 #
@@ -168,7 +204,7 @@ class MemoryCache:
             "SELECT structural_hash, task_description, commands_json, "
             "hit_count, created_at, last_used, role_sequence, task_key "
             "FROM sequences WHERE domain = ? AND task_key = ?",
-            (domain, task_key)
+            (domain, task_key),
         ).fetchall()
 
         best_match: tuple[float, Any] | None = None
@@ -203,7 +239,12 @@ class MemoryCache:
         task_description: str,
         commands: list[CDPCommand],
     ) -> None:
-        """Persist a successful action sequence."""
+        """Persist a successful action sequence.
+
+        Uses INSERT OR IGNORE to preserve the first successful sequence for each
+        (domain, structural_hash, task_key). Subsequent runs with the same DOM
+        structure will not overwrite the cached sequence.
+        """
         db = self._ensure_db()
         now = datetime.now(timezone.utc).isoformat()
         commands_json = json.dumps([asdict(c) for c in commands])
@@ -211,23 +252,29 @@ class MemoryCache:
 
         db.execute(
             """
-            INSERT INTO sequences
+            INSERT OR IGNORE INTO sequences
                 (domain, structural_hash, task_key, task_description,
                  role_sequence, commands_json, hit_count, created_at, last_used)
             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(domain, structural_hash, task_key) DO UPDATE SET
-                commands_json    = excluded.commands_json,
-                task_description = excluded.task_description,
-                role_sequence    = excluded.role_sequence,
-                last_used        = excluded.last_used
             """,
-            (domain, structural_hash, task_key, task_description,
-             role_sequence, commands_json, now, now),
+            (
+                domain,
+                structural_hash,
+                task_key,
+                task_description,
+                role_sequence,
+                commands_json,
+                now,
+                now,
+            ),
         )
         db.commit()
         logger.info(
             "Cached %d commands for domain=%s task=%s hash=%.8s",
-            len(commands), domain, task_key, structural_hash
+            len(commands),
+            domain,
+            task_key,
+            structural_hash,
         )
 
     def increment_hit(self, domain: str, structural_hash: str, task_key: str) -> None:
@@ -244,9 +291,7 @@ class MemoryCache:
     def invalidate(self, domain: str) -> int:
         """Remove all cached sequences for a domain. Returns rows deleted."""
         db = self._ensure_db()
-        cursor = db.execute(
-            "DELETE FROM sequences WHERE domain = ?", (domain,)
-        )
+        cursor = db.execute("DELETE FROM sequences WHERE domain = ?", (domain,))
         db.commit()
         return cursor.rowcount
 
@@ -255,9 +300,7 @@ class MemoryCache:
         db = self._ensure_db()
         total = db.execute("SELECT COUNT(*) FROM sequences").fetchone()[0]
         hits = db.execute("SELECT SUM(hit_count) FROM sequences").fetchone()[0] or 0
-        domains = db.execute(
-            "SELECT COUNT(DISTINCT domain) FROM sequences"
-        ).fetchone()[0]
+        domains = db.execute("SELECT COUNT(DISTINCT domain) FROM sequences").fetchone()[0]
         return {"total_sequences": total, "total_hits": hits, "domains": domains}
 
     # ------------------------------------------------------------------ #
@@ -296,7 +339,7 @@ class MemoryCache:
                     "domain": domain,
                     "cache_hit": was_cache_hit,
                     "tags": ["browser", "terx", "cdp"],
-                }
+                },
             }
             f.write(json.dumps(session_record) + "\n")
 
@@ -318,8 +361,8 @@ class MemoryCache:
                             "latency_ms": cmd.latency_ms,
                             "cache_hit": was_cache_hit,
                             "cdp_method": cmd.method,
-                        }
-                    }
+                        },
+                    },
                 }
                 f.write(json.dumps(frame) + "\n")
 
@@ -330,6 +373,7 @@ class MemoryCache:
 # ------------------------------------------------------------------ #
 # Recording context manager                                             #
 # ------------------------------------------------------------------ #
+
 
 class RecordingContext:
     """
@@ -367,36 +411,34 @@ class RecordingContext:
             raise RuntimeError("No cached sequence to replay (cache miss)")
 
         t0 = time.perf_counter()
-        
+
         # Fresh DOM snapshot of the current page at replay start
         extractor = DOMExtractor()
         current_snapshot = await extractor.snapshot(self._bridge)
         current_elements = current_snapshot.elements
-        
+
         # Tracks dynamic mappings for objectId, nodeId, etc.
         runtime_value_map = {}
 
         for cmd in self._cached_seq.commands:
             if cmd.method in MUTATING_CDP_METHODS:
                 await self._bridge.wait_for_load(timeout=2.0)
-                
+
             # Translate parameters dynamically using node metadata and value map
             mapped_params = _translate_parameters(
                 cmd.params, cmd.metadata, current_elements, runtime_value_map
             )
-            
+
             try:
                 actual_result = await self._bridge.send(cmd.method, mapped_params)
                 # Discover new runtime mappings from the output (e.g. objectId returned)
                 _discover_mappings(cmd.result, actual_result, runtime_value_map)
             except Exception as exc:
-                logger.warning(
-                    "Replay failed at %s: %s — attempting self-healing",
-                    cmd.method, exc
-                )
+                logger.warning("Replay failed at %s: %s — attempting self-healing", cmd.method, exc)
                 from terx.agent.healer import SelfHealer
+
                 healer = SelfHealer()
-                
+
                 # Update current DOM snapshot before healing
                 current_snapshot = await extractor.snapshot(self._bridge)
                 current_elements = current_snapshot.elements
@@ -405,7 +447,7 @@ class RecordingContext:
                     failed_method=cmd.method,
                     old_params=mapped_params,
                     current_dom=current_elements,
-                    task_desc=self._task
+                    task_desc=self._task,
                 )
 
                 if new_params:
@@ -458,6 +500,7 @@ class RecordingContext:
         if screenshot_path.exists():
             try:
                 import base64 as _b64
+
                 result = await self._bridge.send_internal(
                     "Page.captureScreenshot", {"format": "png"}
                 )
@@ -465,13 +508,15 @@ class RecordingContext:
                 old_screenshot = screenshot_path.read_bytes()
 
                 from terx.vision.ssim import compute_ssim
+
                 ssim_score = compute_ssim(old_screenshot, new_screenshot)
                 logger.info("Visual Audit SSIM Score: %.3f", ssim_score)
 
                 if ssim_score < SSIM_THRESHOLD:
                     logger.warning(
                         "SSIM drift detected (%.3f < %.3f)! UI changed significantly.",
-                        ssim_score, SSIM_THRESHOLD
+                        ssim_score,
+                        SSIM_THRESHOLD,
                     )
             except ImportError:
                 logger.debug("SSIM audit skipped — vision deps not installed")
@@ -489,7 +534,7 @@ class RecordingContext:
             elements = DOMExtractor()._extract_interactable(nodes)
             if self._snapshot:
                 self._snapshot.elements = elements
-                
+
         elif method in MUTATING_CDP_METHODS:
             node_info = _extract_node_info(params, self._snapshot)
             cmd = CDPCommand(
@@ -497,7 +542,7 @@ class RecordingContext:
                 params=params,
                 result=result,
                 latency_ms=latency,
-                metadata={"node_info": node_info}
+                metadata={"node_info": node_info},
             )
             self._recorded_commands.append(cmd)
 
@@ -512,7 +557,9 @@ class RecordingContext:
             self._session_id = f"browser_{self._domain}_{self._session_id.split('_')[-1]}"
 
         # Lookup cached sequence
-        self._cached_seq = self._cache.lookup(self._domain, self._snapshot.role_sequence, self._task)
+        self._cached_seq = self._cache.lookup(
+            self._domain, self._snapshot.role_sequence, self._task
+        )
 
         # Calculate run number
         db = self._cache._ensure_db()
@@ -520,7 +567,7 @@ class RecordingContext:
         self._run_number = db.execute(
             "SELECT COALESCE(SUM(hit_count) + COUNT(*), 1) "
             "FROM sequences WHERE domain = ? AND task_key = ?",
-            (self._domain, task_key)
+            (self._domain, task_key),
         ).fetchone()[0]
 
         if not self.hit:
@@ -547,12 +594,15 @@ class RecordingContext:
             # Save visual baseline for future SSIM checks
             try:
                 import base64 as _b64
+
                 result = await self._bridge.send_internal(
                     "Page.captureScreenshot", {"format": "png"}
                 )
                 screenshot_bytes = _b64.b64decode(result.get("data", ""))
                 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-                (SCREENSHOT_DIR / f"{self._snapshot.structural_hash}.png").write_bytes(screenshot_bytes)
+                (SCREENSHOT_DIR / f"{self._snapshot.structural_hash}.png").write_bytes(
+                    screenshot_bytes
+                )
             except Exception as e:
                 logger.warning("Failed to save baseline screenshot for SSIM: %s", e)
 
@@ -614,6 +664,7 @@ def _task_key(task_description: str) -> str:
 # Replay ID/Handle Mapping Helpers                                     #
 # ------------------------------------------------------------------ #
 
+
 def _extract_node_info(params: Any, snapshot: DOMSnapshot | None) -> dict:
     """Extract role and label for any backendNodeId references in params."""
     node_info = {}
@@ -637,7 +688,9 @@ def _extract_node_info(params: Any, snapshot: DOMSnapshot | None) -> dict:
     return node_info
 
 
-def _translate_parameters(params: Any, metadata: dict, current_elements: list, value_map: dict) -> Any:
+def _translate_parameters(
+    params: Any, metadata: dict, current_elements: list, value_map: dict
+) -> Any:
     """Recursively swap mapped values and translate old node IDs to new ones."""
     if isinstance(params, dict):
         new_dict = {}
@@ -666,7 +719,9 @@ def _translate_parameters(params: Any, metadata: dict, current_elements: list, v
             new_dict[k] = _translate_parameters(v, metadata, current_elements, value_map)
         return new_dict
     elif isinstance(params, list):
-        return [_translate_parameters(item, metadata, current_elements, value_map) for item in params]
+        return [
+            _translate_parameters(item, metadata, current_elements, value_map) for item in params
+        ]
     else:
         return value_map.get(params, params)
 
@@ -684,7 +739,9 @@ def _discover_mappings(cached: Any, actual: Any, value_map: dict) -> None:
         if isinstance(cached, (str, int)) and cached != actual:
             if isinstance(cached, int) and cached < 100:
                 return
-            if isinstance(cached, str) and (len(cached) < 4 or cached.lower() in ("true", "false", "null", "undefined")):
+            if isinstance(cached, str) and (
+                len(cached) < 4 or cached.lower() in ("true", "false", "null", "undefined")
+            ):
                 return
             value_map[cached] = actual
 
@@ -695,6 +752,7 @@ MuscleMemorycache = MemoryCache
 
 class CacheReplayError(Exception):
     """Raised when a cached CDP command fails during replay (DOM drift)."""
+
     def __init__(self, failed_method: str) -> None:
         self.failed_method = failed_method
         super().__init__(f"Replay failed at CDP method: {failed_method}")

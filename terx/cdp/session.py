@@ -34,12 +34,14 @@ class BrowserSession:
         host: str = "localhost",
         port: int = DEFAULT_DEVTOOLS_PORT,
         heartbeat_interval: float = 5.0,
+        connect_timeout: float = 10.0,
     ) -> None:
         self.host = host
         self.port = port
         self.heartbeat_interval = heartbeat_interval
+        self.connect_timeout = connect_timeout
 
-        self._bridges: dict[str, CDPBridge] = {}   # target_id → bridge
+        self._bridges: dict[str, CDPBridge] = {}  # target_id → bridge
         self._active_target: str | None = None
         self._heartbeat_task: asyncio.Task | None = None
 
@@ -61,12 +63,8 @@ class BrowserSession:
         if page_targets:
             await self._connect_target(page_targets[0]["id"])
 
-        self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name="cdp-heartbeat"
-        )
-        logger.info(
-            "BrowserSession started → %d active targets", len(self._bridges)
-        )
+        self._heartbeat_task = asyncio.create_task(self._heartbeat(), name="cdp-heartbeat")
+        logger.info("BrowserSession started → %d active targets", len(self._bridges))
 
     async def stop(self) -> None:
         """Close all bridges and stop heartbeat."""
@@ -143,7 +141,7 @@ class BrowserSession:
     async def _connect_target(self, target_id: str) -> CDPBridge:
         """Connect a CDPBridge to a specific target and register it."""
         ws_url = f"ws://{self.host}:{self.port}/devtools/page/{target_id}"
-        bridge = CDPBridge(ws_url)
+        bridge = CDPBridge(ws_url, connect_timeout=self.connect_timeout)
         await bridge.connect()
         self._bridges[target_id] = bridge
         self._active_target = target_id
@@ -164,9 +162,7 @@ class BrowserSession:
                 await bridge.send("Browser.getVersion")
                 backoff = 0.1  # reset on success
             except Exception:
-                logger.warning(
-                    "CDP heartbeat failed — attempting reconnect in %.1fs", backoff
-                )
+                logger.warning("CDP heartbeat failed — attempting reconnect in %.1fs", backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 10.0)
                 try:

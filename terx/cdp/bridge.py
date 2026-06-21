@@ -33,9 +33,10 @@ class CDPBridge:
             await bridge.send("Page.navigate", {"url": "https://example.com"})
     """
 
-    def __init__(self, ws_url: str, timeout: float = 30.0) -> None:
+    def __init__(self, ws_url: str, timeout: float = 30.0, connect_timeout: float = 10.0) -> None:
         self.ws_url = ws_url
         self.timeout = timeout
+        self.connect_timeout = connect_timeout
 
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._id_counter: int = 0
@@ -64,16 +65,20 @@ class CDPBridge:
 
     async def connect(self) -> None:
         """Open the WebSocket and start the listener loop."""
-        self._ws = await websockets.connect(
-            self.ws_url,
-            max_size=100 * 1024 * 1024,   # 100 MB — large pages can be big
-            ping_interval=20,
-            ping_timeout=10,
-        )
+        try:
+            self._ws = await asyncio.wait_for(
+                websockets.connect(
+                    self.ws_url,
+                    max_size=100 * 1024 * 1024,  # 100 MB — large pages can be big
+                    ping_interval=20,
+                    ping_timeout=10,
+                ),
+                timeout=self.connect_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"CDP WebSocket connection timed out after {self.connect_timeout}s")
         self._connected = True
-        self._listener_task = asyncio.create_task(
-            self._listen(), name="cdp-listener"
-        )
+        self._listener_task = asyncio.create_task(self._listen(), name="cdp-listener")
         logger.debug("CDP connected → %s", self.ws_url)
 
     async def close(self) -> None:
@@ -129,9 +134,7 @@ class CDPBridge:
             result = await asyncio.wait_for(future, timeout=self.timeout)
         except asyncio.TimeoutError:
             self._pending.pop(cmd_id, None)
-            raise asyncio.TimeoutError(
-                f"CDP command '{method}' timed out after {self.timeout}s"
-            )
+            raise asyncio.TimeoutError(f"CDP command '{method}' timed out after {self.timeout}s")
 
         latency_ms = (time.perf_counter() - t0) * 1000
 
@@ -185,8 +188,7 @@ class CDPBridge:
         while time.time() - t0 < timeout:
             try:
                 res = await self.send_internal(
-                    "Runtime.evaluate",
-                    {"expression": "document.readyState", "returnByValue": True}
+                    "Runtime.evaluate", {"expression": "document.readyState", "returnByValue": True}
                 )
                 state = res.get("result", {}).get("value")
                 if state == "complete":
@@ -204,9 +206,7 @@ class CDPBridge:
         """Async-iterate over unsolicited CDP events."""
         while self._connected:
             try:
-                event = await asyncio.wait_for(
-                    self._event_queue.get(), timeout=1.0
-                )
+                event = await asyncio.wait_for(self._event_queue.get(), timeout=1.0)
                 yield event
             except asyncio.TimeoutError:
                 continue
@@ -227,9 +227,7 @@ class CDPBridge:
                     future = self._pending.pop(cmd_id, None)
                     if future and not future.done():
                         if "error" in msg:
-                            future.set_exception(
-                                CDPError(msg["error"].get("message", "CDP error"))
-                            )
+                            future.set_exception(CDPError(msg["error"].get("message", "CDP error")))
                         else:
                             future.set_result(msg.get("result", {}))
                 else:
@@ -251,4 +249,5 @@ class CDPBridge:
 
 class CDPError(Exception):
     """Chrome returned an error for a CDP command."""
+
     pass
