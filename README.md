@@ -56,23 +56,25 @@ Total: $0.008 — 98% cost reduction. Zero code changes after Run 1.
 
 ## Benchmarks
 
-10-task suite. Real Chrome. Real CDP. Measured, not estimated.
+Real measurement. LLM agent = `openai/gpt-oss-120b` via Groq API. Token counts from API response headers. TERX replay measured wall-clock. [Full methodology →](BENCHMARKS.md)
 
-| Task | Steps | Without TERX | With TERX | Speedup | Token savings |
+| Task | LLM Steps | Agent (cold) | TERX (warm) | Speedup | Cost saved |
 |:---|:---:|:---:|:---:|:---:|:---:|
-| User Login Flow | 2 | 4.57s · $0.036 | **0.47s · $0.000** | **9.6x** | **100%** |
-| Search + Filter | 2 | 4.69s · $0.036 | **0.17s · $0.000** | **27.6x** | **100%** |
-| Multi-step Signup | 3 | 6.84s · $0.053 | **0.13s · $0.000** | **51.3x** | **100%** |
-| E-commerce Product | 2 | 4.70s · $0.036 | **0.16s · $0.000** | **29.1x** | **100%** |
-| Settings Toggles | 2 | 4.82s · $0.036 | **0.17s · $0.000** | **27.7x** | **100%** |
-| Data Table Pagination | 2 | 4.65s · $0.036 | **0.14s · $0.000** | **33.4x** | **100%** |
-| Support Ticket | 3 | 6.77s · $0.053 | **0.13s · $0.000** | **51.1x** | **100%** |
-| Fuzzy Search | 2 | 4.56s · $0.036 | **0.13s · $0.000** | **33.8x** | **100%** |
-| Profile Update | 3 | 6.86s · $0.053 | **0.17s · $0.000** | **41.4x** | **100%** |
-| Complex Form | 2 | 4.66s · $0.036 | **0.16s · $0.000** | **29.3x** | **100%** |
-| **Average** | — | **5.31s · $0.041** | **0.18s · $0.000** | **🔥 28.8x faster** | **🔥 100%** |
+| User Login Flow | 4 | 2.93s · $0.0076 | **0.078s · $0.000** | **37.7x** | **100%** |
+| Search + Filter | 5 | 3.99s · $0.0136 | **0.101s · $0.000** | **39.7x** | **100%** |
+| Multi-step Signup | 2 | 1.54s · $0.0045 | **0.062s · $0.000** | **25.0x** | **100%** |
+| E-commerce Product | 5 | 25.97s · $0.0161 | **0.091s · $0.000** | **286x** | **100%** |
+| Settings Toggles | 4 | 16.01s · $0.0095 | **0.103s · $0.000** | **155.9x** | **100%** |
+| Data Table Pagination | 12 | 90.84s · $0.0567 | **0.259s · $0.000** | **350.4x** | **100%** |
+| Support Ticket | 4 | 15.40s · $0.0078 | **0.101s · $0.000** | **152.2x** | **100%** |
+| Fuzzy Search | 3 | 11.85s · $0.0062 | **0.089s · $0.000** | **132.9x** | **100%** |
+| Profile Update | 3 | 12.35s · $0.0086 | **0.094s · $0.000** | **131.2x** | **100%** |
+| Complex Form | 4 | 17.74s · $0.0082 | **0.110s · $0.000** | **161.5x** | **100%** |
+| **Average** | — | **19.86s · $0.014** | **0.109s · $0.000** | **🔥 182.7x** | **🔥 100%** |
 
-GPT-4o pricing ($2.50/1M input, $10/1M output). [Reproduce it: `terx-bench`](BENCHMARKS.md)
+**Cache hit rate: 10/10.** TERX replay uses zero LLM calls regardless of which model the agent used.
+
+Run it yourself: `GROQ_API_KEY=your_key python -m terx.benchmarks.real_agent`
 
 ---
 

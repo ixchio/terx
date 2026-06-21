@@ -54,8 +54,9 @@ dev = [
 all = ["terx[embeddings,vision,healing,dev]"]
 
 [project.scripts]
-terx-server = "terx.server.mcp:main"
-terx-bench  = "terx.benchmarks.baseline:main"
+terx-server    = "terx.server.mcp:main"
+terx-bench     = "terx.benchmarks.baseline:main"
+terx-bench-real = "terx.benchmarks.real_agent:main"
 
 [project.urls]
 Homepage   = "https://github.com/ixchio/terx"
