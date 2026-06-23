@@ -28,6 +28,8 @@ TERX remembers.
 
 Run 1: your agent discovers the path. TERX watches and records the exact Chrome DevTools Protocol commands. Run 2 onwards: TERX replays them. No LLM. No screenshot. No re-discovery. ~100ms.
 
+![TERX live demo](docs/assets/demo.gif)
+
 ```
 Run 1:  agent runs normally              2.93s · 2,090 tokens · $0.0076
          TERX silently records CDP commands
