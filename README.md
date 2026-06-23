@@ -11,7 +11,7 @@
 
 **browser agent memory. raw cdp. no playwright.**
 
-[![CI](https://github.com/ixchio/terx/actions/workflows/ci.yml/badge.svg)](https://github.com/ixchio/terx/actions)
+[![CI](https://github.com/ixchio/terx/actions/workflows/tests.yml/badge.svg)](https://github.com/ixchio/terx/actions)
 [![PyPI](https://img.shields.io/pypi/v/terx?color=3ddc84&label=PyPI)](https://pypi.org/project/terx/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
@@ -20,15 +20,18 @@
 
 ---
 
-Your browser agent is goldfish-brained.
+your browser agent is goldfish-brained.
 
-It logs into the same dashboard 50 times a day. It rediscovers the login button 50 times. Burns $0.008 worth of tokens 50 times. Every. Single. Run.
+it logs into the same dashboard 50 times a day. it rediscovers the login button 50 times. it burns $0.008 worth of tokens 50 times. every. single. run. if you're deploying this to production, you are NGMI.
 
-TERX remembers.
+TERX is the muscle memory layer.
 
-Run 1: your agent discovers the path. TERX watches and records the exact Chrome DevTools Protocol commands. Run 2 onwards: TERX replays them. No LLM. No screenshot. No re-discovery. ~100ms.
+Run 1: your agent figures out the path. TERX watches and records the exact Chrome DevTools Protocol (CDP) commands into a local sqlite cache. 
+Run 2 onwards: TERX just replays the CDP commands. no LLM. no screenshot parsing. no hallucination. no generic AI BS. just sub-100ms native replay.
 
-![TERX live demo](docs/assets/demo.gif)
+<div align="center">
+  <img src="https://raw.githubusercontent.com/ixchio/terx/main/docs/assets/demo.gif" alt="TERX live demo" width="100%">
+</div>
 
 ```
 Run 1:  agent runs normally              2.93s · 2,090 tokens · $0.0076
@@ -119,9 +122,9 @@ On replay, TERX re-snapshots the DOM and translates old `backendNodeId`s to curr
 
 ---
 
-## Why not Playwright?
+## why not playwright?
 
-Playwright is a test framework. TERX is an execution layer with memory.
+playwright is a heavy test framework. TERX is a lean execution layer with memory. we're raw dogging CDP here.
 
 |  | Playwright | TERX |
 |:--|:--:|:--:|
