@@ -9,8 +9,10 @@ TERX is a memory layer for browser agents. Run a task once — TERX records the 
 | Guide | Description |
 |:---|:---|
 | [Quick Start](quickstart.md) | Get running in 5 minutes |
-| [Benchmarks](benchmarks.md) | Real measured numbers — 182.7x speedup, 100% token savings |
+| [Benchmarks](benchmarks.md) | Real measured numbers — 173.9x speedup, 100% token savings |
 | [Architecture](development.md) | How TERX works internally |
+| [Project Structure](project-structure.md) | Repository layout and artifact policy |
+| [Stagehand](stagehand.md) | Practical Stagehand integration path |
 | [Changelog](changelog.md) | Version history |
 
 ---
@@ -18,10 +20,10 @@ TERX is a memory layer for browser agents. Run a task once — TERX records the 
 ## At a glance
 
 ```
-Run 1:  LLM agent discovers the path   →  $0.0076 · 2,090 tokens · 2.93s
+Run 1:  LLM agent discovers the path   →  $0.0065 · 1,985 tokens · 3.05s
          TERX silently records CDP commands
 
-Run 2:  TERX replays                   →  $0.0000 · 0 tokens · 0.078s
+Run 2:  TERX replays                   →  $0.0000 · 0 tokens · 0.090s
 Run 3+: Same
 ```
 
@@ -45,6 +47,13 @@ Run the MCP server (works with Claude Desktop, Cursor, Windsurf):
 
 ```bash
 terx-server
+```
+
+Run local proof demos:
+
+```bash
+terx demo
+terx eval-local
 ```
 
 ---

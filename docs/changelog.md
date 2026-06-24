@@ -4,6 +4,31 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
+## [0.3.0] - 2026-06-24
+
+### Fixed
+- Fixed SQLite cache deadlocks caused by nested cache locking.
+- Fixed CDP request ID generation in the normal `send()` path.
+- Prevented internal DOM snapshots from being recorded as user actions.
+- Restored compact stable element IDs for MCP/tool use.
+
+### Added
+- Added explicit MCP task wrappers: `browser_task_start` and `browser_task_finish`.
+- Added `browser_click_at` as a physical-click fallback while keeping `browser_click` replay-friendly.
+- Added tracked MIT license and quickstart documentation.
+- Added parametric replay with `{{variable}}` interpolation.
+- Added default redaction for password/token/API-key typed fields.
+- Added replay postcondition checks for URL, title, body text, selector presence, and custom JS.
+- Added Browser Use-style `wrap_browser_use()` adapter.
+- Added installed `terx-demo` and `terx demo` commands that run a local Chrome replay demo.
+- Added structured `ReplayReport` objects across Python, MCP, and Browser Use-style surfaces.
+- Added `TERX_REDACT_ALL_TEXT` and `TERX_REDACT_FIELDS` secret policy controls.
+- Added MutationObserver replay drift guard with `MutationDriftError`.
+- Added `terx` CLI with `doctor`, `stats`, `inspect`, `purge`, `demo`, and `eval-local`.
+- Added local Chrome eval suite and Stagehand integration guidance.
+
+---
+
 ## [0.1.0] - 2026-06-01
 
 This is the initial alpha release of TERX, featuring a bare-metal CDP bridge, a fuzzy accessibility snapshot indexer, SQLite muscle memory storage, and an MCP server.

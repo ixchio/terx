@@ -20,9 +20,9 @@ try:
 except ImportError:
     raise ImportError("mcp is required for the TERX server. Install with: pip install mcp")
 
+from terx.cache.cache import MemoryCache, RecordingContext, session_for
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
-from terx.cache.cache import MemoryCache
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -66,6 +66,7 @@ class LRUScreenshotStore:
 
     def put(self, key: str, data: bytes) -> None:
         if key in self._store:
+            self._store[key] = data
             self._store.move_to_end(key)
         else:
             if len(self._store) >= self._max_size:
@@ -101,6 +102,7 @@ class TERXServer:
         self._screenshot_store = LRUScreenshotStore(max_size=screenshot_store_size)
         self._connect_lock = asyncio.Lock()
         self._session: BrowserSession | None = None
+        self._task_ctx: RecordingContext | None = None
         self._host = host
         self._port = port
         self._connect_timeout = connect_timeout
@@ -112,8 +114,8 @@ class TERXServer:
             instructions=(
                 "TERX browser agent tools. "
                 "Use browser_get_state first to see what's on the page. "
-                "The cache automatically replays successful sequences — "
-                "no need to re-discover elements you've found before."
+                "Wrap repeated workflows with browser_task_start and "
+                "browser_task_finish to record and replay them with zero LLM calls."
             ),
         )
         self._register_tools()
@@ -159,6 +161,102 @@ class TERXServer:
 
     def _register_tools(self) -> None:
         """Register all MCP tools as instance methods."""
+
+        @self.mcp.tool()
+        async def browser_task_start(
+            task: str,
+            variables: dict[str, str] | None = None,
+            postcondition: dict | None = None,
+            mutation_guard: bool = True,
+            mutation_threshold: int = 20,
+        ) -> dict:
+            """
+            Start a cacheable browser task.
+            If TERX has seen this task on this DOM before, it replays immediately.
+            Otherwise, subsequent browser actions are recorded until browser_task_finish.
+            """
+            task = task.strip()
+            if not task:
+                return {"success": False, "error": "Task description is required."}
+            if self._task_ctx is not None:
+                return {
+                    "success": False,
+                    "error": "A browser task is already active. Finish it before starting another.",
+                }
+
+            await self._ensure_connected()
+            session = self._get_session()
+            bridge = session.bridge()
+            ctx = session_for(
+                self._cache,
+                bridge,
+                task,
+                variables=variables or {},
+                postcondition=postcondition,
+                mutation_guard=mutation_guard,
+                mutation_threshold=mutation_threshold,
+            )
+
+            try:
+                await ctx.__aenter__()
+                if ctx.hit:
+                    await ctx.replay()
+                    await ctx.__aexit__(None, None, None)
+                    return {
+                        "success": True,
+                        "task": task,
+                        "cache_hit": True,
+                        "replayed": True,
+                        "ledger": str(ctx.ledger) if ctx.ledger else None,
+                        "report": ctx.report.as_dict() if ctx.report else None,
+                    }
+
+                self._task_ctx = ctx
+                return {
+                    "success": True,
+                    "task": task,
+                    "cache_hit": False,
+                    "recording": True,
+                    "variables": sorted((variables or {}).keys()),
+                    "mutation_guard": mutation_guard,
+                    "mutation_threshold": mutation_threshold,
+                    "note": "Run the browser actions, then call browser_task_finish(success=true).",
+                }
+            except Exception as exc:
+                await ctx.__aexit__(type(exc), exc, exc.__traceback__)
+                return {"success": False, "task": task, "error": str(exc)}
+
+        @self.mcp.tool()
+        async def browser_task_finish(success: bool = True) -> dict:
+            """
+            Finish the active cacheable browser task.
+            Successful tasks are stored; failed/aborted tasks are discarded.
+            """
+            if self._task_ctx is None:
+                return {"success": False, "error": "No active browser task."}
+
+            ctx = self._task_ctx
+            self._task_ctx = None
+            recorded = ctx.recorded_commands
+
+            if success:
+                await ctx.__aexit__(None, None, None)
+                return {
+                    "success": True,
+                    "cached": recorded > 0,
+                    "commands_recorded": recorded,
+                    "ledger": str(ctx.ledger) if ctx.ledger else None,
+                    "report": ctx.report.as_dict() if ctx.report else None,
+                }
+
+            err = RuntimeError("MCP task marked unsuccessful")
+            await ctx.__aexit__(type(err), err, err.__traceback__)
+            return {
+                "success": True,
+                "cached": False,
+                "commands_recorded": recorded,
+                "note": "Task discarded.",
+            }
 
         @self.mcp.tool()
         async def browser_get_state() -> dict:
@@ -229,25 +327,63 @@ class TERXServer:
                     "error": f"Element {element_id} not found. Call browser_get_state to refresh.",
                 }
 
-            # Get element bounding box via DOM
+            # Resolve the element and click it through the node handle. Recording
+            # DOM.resolveNode lets TERX remap fresh backendNodeIds on replay.
             try:
-                box_result = await bridge.send(
+                resolve_result = await bridge.send("DOM.resolveNode", {"backendNodeId": el.backend_dom_id})
+            except Exception as exc:
+                return {"success": False, "error": f"Cannot resolve element: {exc}"}
+
+            object_id = resolve_result.get("object", {}).get("objectId")
+            if not object_id:
+                return {"success": False, "error": "Element did not resolve to a JS object"}
+
+            await bridge.send(
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": object_id,
+                    "functionDeclaration": "function() { this.click(); }",
+                },
+            )
+
+            await asyncio.sleep(0.3)
+            return {
+                "success": True,
+                "clicked": {"id": el.id, "role": el.role, "label": el.label},
+            }
+
+        @self.mcp.tool()
+        async def browser_click_at(element_id: int) -> dict:
+            """
+            Fallback physical click by element center.
+            Prefer browser_click; this is for pages that require mouse coordinates.
+            """
+            await self._ensure_connected()
+            session = self._get_session()
+            bridge = session.bridge()
+            snapshot = await self._extractor.snapshot(bridge)
+
+            el = snapshot.find_by_id(element_id)
+            if el is None:
+                return {
+                    "success": False,
+                    "error": f"Element {element_id} not found. Call browser_get_state to refresh.",
+                }
+
+            try:
+                box_result = await bridge.send_internal(
                     "DOM.getBoxModel", {"backendNodeId": el.backend_dom_id}
                 )
             except Exception as exc:
                 return {"success": False, "error": f"Cannot get element position: {exc}"}
 
-            model = box_result.get("model", {})
-            content = model.get("content", [])
-
+            content = box_result.get("model", {}).get("content", [])
             if len(content) < 8:
                 return {"success": False, "error": "Element has no renderable bounding box"}
 
-            # Center = average of all 4 corner coordinates
             x = (content[0] + content[2] + content[4] + content[6]) / 4
             y = (content[1] + content[3] + content[5] + content[7]) / 4
 
-            # Dispatch mouse events
             for event_type in ["mouseMoved", "mousePressed", "mouseReleased"]:
                 await bridge.send(
                     "Input.dispatchMouseEvent",
@@ -286,54 +422,7 @@ class TERXServer:
             await bridge.send("DOM.focus", {"backendNodeId": el.backend_dom_id})
             await asyncio.sleep(0.1)
 
-            # Resolve to a JS object reference first, then set its value.
-            resolve_result = await bridge.send(
-                "DOM.resolveNode", {"backendNodeId": el.backend_dom_id}
-            )
-            object_id = resolve_result.get("object", {}).get("objectId")
-
-            if object_id:
-                # Use callFunctionOn to target the EXACT element
-                await bridge.send(
-                    "Runtime.callFunctionOn",
-                    {
-                        "objectId": object_id,
-                        "functionDeclaration": """
-                        function(newValue) {
-                            var nativeSetter = Object.getOwnPropertyDescriptor(
-                                window.HTMLInputElement.prototype, 'value'
-                            )?.set || Object.getOwnPropertyDescriptor(
-                                window.HTMLTextAreaElement.prototype, 'value'
-                            )?.set;
-                            if (nativeSetter) {
-                                nativeSetter.call(this, newValue);
-                                this.dispatchEvent(new Event('input', { bubbles: true }));
-                                this.dispatchEvent(new Event('change', { bubbles: true }));
-                            } else {
-                                this.value = newValue;
-                            }
-                        }
-                        """,
-                        "arguments": [{"value": text}],
-                    },
-                )
-            else:
-                # Fallback: type character by character via key events
-                for char in text:
-                    await bridge.send(
-                        "Input.dispatchKeyEvent",
-                        {
-                            "type": "keyDown",
-                            "text": char,
-                        },
-                    )
-                    await bridge.send(
-                        "Input.dispatchKeyEvent",
-                        {
-                            "type": "keyUp",
-                            "text": char,
-                        },
-                    )
+            await bridge.send("Input.insertText", {"text": text})
 
             return {
                 "success": True,

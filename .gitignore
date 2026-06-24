@@ -2,12 +2,19 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 *.egg-info/
 dist/
 build/
 .terx/
 .vcr/
 .venv/
+.benchmarks/
+.claude/
 *.db
 LAUNCH.md
 

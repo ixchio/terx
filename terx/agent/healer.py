@@ -82,14 +82,16 @@ class SelfHealer:
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
             )
-            content = response.choices[0].message.content
+            content = response.choices[0].message.content.strip()
             # Clean up markdown if present
             if content.startswith("```json"):
-                content = content.strip()[7:-3]
+                # Remove first and last lines
+                content = "\n".join(content.split("\n")[1:-1])
             elif content.startswith("```"):
-                content = content.strip()[3:-3]
+                # Remove first and last lines
+                content = "\n".join(content.split("\n")[1:-1])
 
-            return json.loads(content)
+            return json.loads(content.strip())
         except Exception as e:
             logger.error("Self-healing prediction failed: %s", e)
             return None

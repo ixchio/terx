@@ -159,7 +159,7 @@ class BrowserSession:
             if bridge is None:
                 continue
             try:
-                await bridge.send("Browser.getVersion")
+                await bridge.send_internal("Browser.getVersion")
                 backoff = 0.1  # reset on success
             except Exception:
                 logger.warning("CDP heartbeat failed — attempting reconnect in %.1fs", backoff)

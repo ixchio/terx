@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "terx"
-version = "0.2.0"
+version = "0.3.0"
 description = "Memory layer for browser agents — zero LLM tokens on repeated tasks. Writes .vcr files compatible with Agent VCR."
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [{ name = "ixchio" }]
 keywords = [
@@ -44,6 +44,9 @@ vision = [
 healing = [
     "litellm>=1.0",
 ]
+browser-use = [
+    "browser-use>=0.13",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -56,17 +59,20 @@ benchmark = [
     "groq>=0.9",
     "python-dotenv>=1.0",
 ]
-all = ["terx[embeddings,vision,healing,dev,benchmark]"]
+all = ["terx[embeddings,vision,healing,browser-use,dev,benchmark]"]
 
 [project.scripts]
+terx           = "terx.cli:main"
 terx-server    = "terx.server.mcp:main"
 terx-bench     = "terx.benchmarks.baseline:main"
 terx-bench-real = "terx.benchmarks.real_agent:main"
+terx-demo      = "terx.demo:main"
+terx-eval-local = "terx.evals.local_suite:main"
 
 [project.urls]
 Homepage      = "https://github.com/ixchio/terx"
 Repository    = "https://github.com/ixchio/terx"
-Documentation = "https://github.com/ixchio/terx/tree/main/docs"
+Documentation = "https://ixchio.github.io/terx/"
 Issues        = "https://github.com/ixchio/terx/issues"
 Changelog     = "https://github.com/ixchio/terx/blob/main/docs/changelog.md"
 

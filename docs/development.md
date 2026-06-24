@@ -93,8 +93,7 @@ The bridge does not use intermediate abstractions. It wraps a raw WebSocket conn
 To bypass loop attachment exceptions (`RuntimeError: Event loop is closed` / `attached to a different loop`), the WebSocket listener executes as a background task spawned on the running loop (`asyncio.get_running_loop()`). Command sequences match incoming frames using incremental transaction IDs:
 
 ```python
-self._id_counter += 1
-cmd_id = self._id_counter
+cmd_id = next(self._id_counter)
 future = asyncio.get_running_loop().create_future()
 self._pending[cmd_id] = future
 
@@ -110,6 +109,78 @@ Fuzzy matching uses token-level **Levenshtein Distance** over the compiled role 
 $$\text{Similarity} = 1.0 - \frac{\text{LevenshteinDistance}(S_{\text{active}}, S_{\text{cached}})}{\max(|S_{\text{active}}|, |S_{\text{cached}}|)}$$
 
 If the similarity is $\ge 0.85$, the cache yields a hit.
+
+### 3. Parametric Replay and Redaction
+
+`session_for(..., variables={...})` replaces matching typed values with stable
+placeholders before caching:
+
+```python
+await bridge.send("Input.insertText", {"text": "user@example.com"})
+# stored as {"text": "{{email}}"} when variables["email"] == "user@example.com"
+```
+
+Sensitive fields whose AX label includes terms such as `password`, `token`, or
+`api key` are redacted by default even when the caller forgot to pass variables.
+Replay then raises `MissingReplayVariable` until the required value is supplied.
+
+### 4. Replay Postconditions
+
+A cache replay can execute technically and still land on the wrong page. TERX
+therefore supports postconditions:
+
+```python
+postcondition={
+    "url_contains": "/dashboard",
+    "text_contains": "Welcome",
+    "selector_exists": "#account-menu",
+}
+```
+
+Failed postconditions raise `PostconditionFailed` and do not count as cache hits.
+
+### 5. Replay Reports
+
+Every recording context exposes `ctx.report`, a structured `ReplayReport` used
+by the Python API, MCP tools, Browser Use-style adapter, and CLI-facing demos.
+It includes cache hit state, command counts, variable placeholders, redacted
+fields, postcondition metadata, latency, run number, and mutation guard stats.
+
+### 6. Mutation Guard
+
+Warm replays can be suspicious even when individual CDP commands succeed. TERX
+therefore injects a temporary page-scoped `MutationObserver` before replay and
+reads the mutation count after the sequence. If the count exceeds the configured
+threshold, replay raises `MutationDriftError` instead of silently accepting a
+workflow that likely landed on a changed UI.
+
+```python
+async with session_for(
+    cache,
+    bridge,
+    "approve invoice",
+    mutation_guard=True,
+    mutation_threshold=20,
+) as ctx:
+    if ctx.hit:
+        await ctx.replay()
+```
+
+### 7. Operator CLI
+
+`terx` is the human/operator command surface:
+
+```bash
+terx doctor
+terx stats
+terx inspect --domain app.example.com
+terx purge app.example.com
+terx demo
+terx eval-local
+```
+
+`inspect` reads SQLite directly in read-only mode and summarizes cached
+sequences without printing recorded secret values.
 
 ---
 

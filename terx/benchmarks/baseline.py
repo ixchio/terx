@@ -1,5 +1,6 @@
 import asyncio
 import http.server
+import logging
 import socketserver
 import threading
 import time
@@ -9,6 +10,8 @@ from pathlib import Path
 from terx.cdp.session import BrowserSession
 from terx.cache.cache import MemoryCache, session_for
 from terx.dom.extractor import DOMExtractor, AXElement
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
 # Local Benchmark HTML content                                         #
@@ -150,6 +153,7 @@ BENCHMARK_HTML = """<!DOCTYPE html>
 # Local HTTP Server for Benchmark                                       #
 # ------------------------------------------------------------------ #
 
+
 class BenchmarkHTTPHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
@@ -161,6 +165,7 @@ class BenchmarkHTTPHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+
 def start_local_server(port=8899):
     handler = BenchmarkHTTPHandler
     socketserver.TCPServer.allow_reuse_address = True
@@ -169,9 +174,11 @@ def start_local_server(port=8899):
     thread.start()
     return httpd
 
+
 # ------------------------------------------------------------------ #
 # Benchmark Logic                                                       #
 # ------------------------------------------------------------------ #
+
 
 def find_element(snapshot, label: str, role_pref: str = None) -> AXElement:
     if role_pref:
@@ -183,38 +190,38 @@ def find_element(snapshot, label: str, role_pref: str = None) -> AXElement:
         raise ValueError(f"Could not find element with label: {label!r}")
     return el
 
+
 async def execute_task_steps(bridge, task_num):
     """
     Executes the standard CDP actions for a task.
     This simulates the actions a browser agent (like browser-use) would perform.
     """
     extractor = DOMExtractor()
-    
+
     if task_num == 1:
         # User Login Flow
         snapshot = await extractor.snapshot(bridge)
         el_email = find_element(snapshot, "email@example.com")
         el_pass = find_element(snapshot, "Password")
         el_btn = find_element(snapshot, "Login")
-        
         await bridge.send("DOM.focus", {"backendNodeId": el_email.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "admin@example.com"})
         await bridge.send("DOM.focus", {"backendNodeId": el_pass.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "password123"})
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 2:
         # Search and Filter
         snapshot = await extractor.snapshot(bridge)
         el_input = find_element(snapshot, "Search products...")
         el_select = find_element(snapshot, "Category: All")
         el_btn = find_element(snapshot, "Search")
-        
+
         await bridge.send("DOM.focus", {"backendNodeId": el_input.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "Premium Laptop"})
         await click_element(bridge, el_select)
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 3:
         # Multi-step Signup Form
         snapshot = await extractor.snapshot(bridge)
@@ -223,7 +230,7 @@ async def execute_task_steps(bridge, task_num):
         el_email = find_element(snapshot, "Email Address")
         el_check = find_element(snapshot, "I agree to terms")
         el_btn = find_element(snapshot, "Sign Up")
-        
+
         await bridge.send("DOM.focus", {"backendNodeId": el_fn.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "John"})
         await bridge.send("DOM.focus", {"backendNodeId": el_ln.backend_dom_id})
@@ -232,85 +239,86 @@ async def execute_task_steps(bridge, task_num):
         await bridge.send("Input.insertText", {"text": "john.doe@gmail.com"})
         await click_element(bridge, el_check)
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 4:
         # E-commerce Product Page
         snapshot = await extractor.snapshot(bridge)
         el_select = find_element(snapshot, "Size: M")
         el_qty = find_element(snapshot, "1")
         el_btn = find_element(snapshot, "Add to Cart")
-        
+
         await click_element(bridge, el_select)
         await bridge.send("DOM.focus", {"backendNodeId": el_qty.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "3"})
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 5:
         # Settings Toggle
         snapshot = await extractor.snapshot(bridge)
         el_notif = find_element(snapshot, "Enable Notifications")
         el_dark = find_element(snapshot, "Dark Mode")
         el_btn = find_element(snapshot, "Save Settings")
-        
+
         await click_element(bridge, el_notif)
         await click_element(bridge, el_dark)
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 6:
         # Data Table Pagination
         snapshot = await extractor.snapshot(bridge)
         el_row = find_element(snapshot, "Select Row 1")
         el_btn = find_element(snapshot, "Next Page")
-        
+
         await click_element(bridge, el_row)
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 7:
         # Support Ticket Submission
         snapshot = await extractor.snapshot(bridge)
         el_subj = find_element(snapshot, "Subject")
         el_desc = find_element(snapshot, "Describe your issue...")
         el_btn = find_element(snapshot, "Submit Ticket")
-        
+
         await bridge.send("DOM.focus", {"backendNodeId": el_subj.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "Billing inquiry"})
         await bridge.send("DOM.focus", {"backendNodeId": el_desc.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "Charged twice this month."})
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 8:
         # Fuzzy Search Navigation
         snapshot = await extractor.snapshot(bridge)
         el_query = find_element(snapshot, "Type query...")
         el_btn = find_element(snapshot, "Fuzzy Search")
-        
+
         await bridge.send("DOM.focus", {"backendNodeId": el_query.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "Returns policy"})
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 9:
         # Profile Update
         snapshot = await extractor.snapshot(bridge)
         el_bio = find_element(snapshot, "Bio...")
         el_country = find_element(snapshot, "USA")
         el_btn = find_element(snapshot, "Update Profile")
-        
+
         await bridge.send("DOM.focus", {"backendNodeId": el_bio.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "Software developer based in SF"})
         await click_element(bridge, el_country)
         await click_element(bridge, el_btn)
-        
+
     elif task_num == 10:
         # Complex Nested Form
         snapshot = await extractor.snapshot(bridge)
         el_name = find_element(snapshot, "Name")
         el_agree = find_element(snapshot, "Accept all terms")
         el_btn = find_element(snapshot, "Finish Benchmark")
-        
+
         await bridge.send("DOM.focus", {"backendNodeId": el_name.backend_dom_id})
         await bridge.send("Input.insertText", {"text": "Alice"})
         await click_element(bridge, el_agree)
         await click_element(bridge, el_btn)
+
 
 async def get_parent_node_id(bridge, backend_dom_id: int) -> int | None:
     try:
@@ -318,18 +326,24 @@ async def get_parent_node_id(bridge, backend_dom_id: int) -> int | None:
         object_id = res.get("object", {}).get("objectId")
         if not object_id:
             return None
-        eval_res = await bridge.send("Runtime.callFunctionOn", {
-            "objectId": object_id,
-            "functionDeclaration": "function() { return this.parentNode; }",
-            "returnByValue": False
-        })
+        eval_res = await bridge.send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": object_id,
+                "functionDeclaration": "function() { return this.parentNode; }",
+                "returnByValue": False,
+            },
+        )
         parent_obj = eval_res.get("result", {})
         if parent_obj.get("subtype") == "node":
-            parent_node_res = await bridge.send("DOM.describeNode", {"objectId": parent_obj.get("objectId")})
+            parent_node_res = await bridge.send(
+                "DOM.describeNode", {"objectId": parent_obj.get("objectId")}
+            )
             return parent_node_res.get("node", {}).get("backendNodeId")
     except Exception:
         pass
     return None
+
 
 async def click_element(bridge, el):
     try:
@@ -345,13 +359,17 @@ async def click_element(bridge, el):
             raise exc
 
     content = box_result["model"]["content"]
+    if len(content) < 8:
+        raise ValueError(f"Invalid box model content: expected 8 coordinates, got {len(content)}")
     x = (content[0] + content[2] + content[4] + content[6]) / 4
     y = (content[1] + content[3] + content[5] + content[7]) / 4
     for event in ["mouseMoved", "mousePressed", "mouseReleased"]:
-        await bridge.send("Input.dispatchMouseEvent", {
-            "type": event, "x": x, "y": y, "button": "left", "clickCount": 1
-        })
+        await bridge.send(
+            "Input.dispatchMouseEvent",
+            {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
+        )
     await asyncio.sleep(0.1)
+
 
 # ------------------------------------------------------------------ #
 # Metrics / Token Pricing Model (matching browser-use)                 #
@@ -368,33 +386,38 @@ OUTPUT_TOKEN_PRICE = 10.00 / 1_000_000
 # Output response (JSON action schema): ~150 tokens
 TOKENS_INPUT_PER_STEP = 6500
 TOKENS_OUTPUT_PER_STEP = 150
-LLM_LATENCY_PER_STEP_SEC = 2.2 # Average gpt-4o response time
+LLM_LATENCY_PER_STEP_SEC = 2.2  # Average gpt-4o response time
 
 # ------------------------------------------------------------------ #
 # Main Main                                                             #
 # ------------------------------------------------------------------ #
 
+
 async def run_benchmarks():
     print("🚀 Starting local benchmark server...")
     server = start_local_server(8899)
-    
+
     print("🌐 Launching headless Chrome...")
-    chrome_proc = subprocess.Popen([
-        "google-chrome",
-        "--headless",
-        "--remote-debugging-port=9222",
-        "--disable-gpu",
-        "--no-sandbox"
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
+    chrome_proc = subprocess.Popen(
+        [
+            "google-chrome",
+            "--headless",
+            "--remote-debugging-port=9222",
+            "--disable-gpu",
+            "--no-sandbox",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
     # Wait for chrome
     await asyncio.sleep(2)
-    
+
     cache = MemoryCache()
     # Invalidate cache from previous runs to ensure clean cold runs
-    for i in range(1, 11):
-        cache.invalidate("localhost:8899")
-        
+    invalidated = cache.invalidate("localhost:8899")
+    logger.info("Cleared %d cached sequences before benchmarks", invalidated)
+
     tasks = [
         "User Login Flow",
         "Search and Filter Results",
@@ -405,122 +428,145 @@ async def run_benchmarks():
         "Support Ticket Submission",
         "Fuzzy Search Navigation",
         "Profile Update Flow",
-        "Complex Nested Form"
+        "Complex Nested Form",
     ]
-    
+
     results = []
-    
+
     try:
         async with BrowserSession() as session:
             bridge = session.bridge()
-            
+
             for idx, task_name in enumerate(tasks, 1):
                 print(f"\n📊 Benchmarking Task {idx}/10: {task_name}")
-                
+
                 # --- COLD RUN (Simulated browser-use agent with LLM) ---
                 # A cold run requires navigating to index, executing step by step, and recording
                 await bridge.send("Page.navigate", {"url": f"http://localhost:8899/#task{idx}"})
                 await bridge.wait_for_load()
-                
+
                 cold_steps = 3 if idx in (3, 7, 9) else (2 if idx in (1, 2, 4, 5, 6, 8, 10) else 1)
-                
+
                 # Cold execution measurements
                 t0_cold = time.perf_counter()
                 async with session_for(cache, bridge, task_name) as ctx:
                     assert not ctx.hit
                     await execute_task_steps(bridge, idx)
                 t1_cold = time.perf_counter()
-                
+
                 cold_execution_time = t1_cold - t0_cold
-                
+
                 # Calculate tokens & costs
                 cold_in_tokens = TOKENS_INPUT_PER_STEP * cold_steps
                 cold_out_tokens = TOKENS_OUTPUT_PER_STEP * cold_steps
                 cold_tokens = cold_in_tokens + cold_out_tokens
-                cold_cost = (cold_in_tokens * INPUT_TOKEN_PRICE) + (cold_out_tokens * OUTPUT_TOKEN_PRICE)
-                
+                cold_cost = (cold_in_tokens * INPUT_TOKEN_PRICE) + (
+                    cold_out_tokens * OUTPUT_TOKEN_PRICE
+                )
+
                 # Total simulated agent time (execution time + LLM response latency)
                 cold_total_time = cold_execution_time + (LLM_LATENCY_PER_STEP_SEC * cold_steps)
-                
+
                 # --- WARM RUN (TERX replay) ---
                 # Reset to initial page load state
                 await bridge.send("Page.navigate", {"url": f"http://localhost:8899/#task{idx}"})
                 await bridge.wait_for_load()
-                
+
                 t0_warm = time.perf_counter()
                 async with session_for(cache, bridge, task_name) as ctx:
                     assert ctx.hit
                     await ctx.replay()
                 t1_warm = time.perf_counter()
-                
+
                 warm_total_time = t1_warm - t0_warm
                 warm_tokens = 0
                 warm_cost = 0.0
-                
+
                 # Speedup calculations
                 speedup = cold_total_time / warm_total_time
                 savings = ((cold_cost - warm_cost) / cold_cost) * 100 if cold_cost > 0 else 0.0
-                
-                results.append({
-                    "task": task_name,
-                    "steps": cold_steps,
-                    "cold_tokens": cold_tokens,
-                    "cold_time": cold_total_time,
-                    "cold_cost": cold_cost,
-                    "warm_tokens": warm_tokens,
-                    "warm_time": warm_total_time,
-                    "warm_cost": warm_cost,
-                    "speedup": speedup,
-                    "savings": savings
-                })
-                
-                print(f"  └─ COLD: {cold_total_time:.2f}s | {cold_tokens} tokens | ${cold_cost:.5f}")
-                print(f"  └─ WARM: {warm_total_time:.2f}s | {warm_tokens} tokens | ${warm_cost:.5f}")
+
+                results.append(
+                    {
+                        "task": task_name,
+                        "steps": cold_steps,
+                        "cold_tokens": cold_tokens,
+                        "cold_time": cold_total_time,
+                        "cold_cost": cold_cost,
+                        "warm_tokens": warm_tokens,
+                        "warm_time": warm_total_time,
+                        "warm_cost": warm_cost,
+                        "speedup": speedup,
+                        "savings": savings,
+                    }
+                )
+
+                print(
+                    f"  └─ COLD: {cold_total_time:.2f}s | {cold_tokens} tokens | ${cold_cost:.5f}"
+                )
+                print(
+                    f"  └─ WARM: {warm_total_time:.2f}s | {warm_tokens} tokens | ${warm_cost:.5f}"
+                )
                 print(f"  └─ Savings: {savings:.1f}% | Speedup: {speedup:.1f}x")
-                
+
     finally:
         print("\n🧹 Cleaning up processes...")
-        chrome_proc.terminate()
+        chrome_proc.kill()
+        try:
+            chrome_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning("Chrome process did not terminate, force killing")
         server.shutdown()
-        
+
     # Generate Markdown Table
     md = "# TERX vs. Raw browser-use Benchmark Results\n\n"
     md += "This benchmark runs 10 identical, multi-step browser tasks comparing a raw **browser-use** agent (modeled with real-world token sizes and GPT-4o latency) against **TERX** using dynamic CDP replaying.\n\n"
     md += "| Task Name | Steps | Cold Time | Warm Time | Speedup | Cold Tokens | Warm Tokens | Cold Cost | Warm Cost | Savings |\n"
     md += "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
-    
+
     total_cold_time = 0
     total_warm_time = 0
     total_cold_tokens = 0
     total_warm_tokens = 0
     total_cold_cost = 0
     total_warm_cost = 0
-    
+
     for r in results:
         md += f"| {r['task']} | {r['steps']} | {r['cold_time']:.2f}s | {r['warm_time']:.3f}s | **{r['speedup']:.1f}x** | {r['cold_tokens']:,} | {r['warm_tokens']} | ${r['cold_cost']:.4f} | ${r['warm_cost']:.4f} | **{r['savings']:.1f}%** |\n"
-        total_cold_time += r['cold_time']
-        total_warm_time += r['warm_time']
-        total_cold_tokens += r['cold_tokens']
-        total_warm_tokens += r['warm_tokens']
-        total_cold_cost += r['cold_cost']
-        total_warm_cost += r['warm_cost']
-        
+        total_cold_time += r["cold_time"]
+        total_warm_time += r["warm_time"]
+        total_cold_tokens += r["cold_tokens"]
+        total_warm_tokens += r["warm_tokens"]
+        total_cold_cost += r["cold_cost"]
+        total_warm_cost += r["warm_cost"]
+
     avg_speedup = total_cold_time / total_warm_time
     total_savings = ((total_cold_cost - total_warm_cost) / total_cold_cost) * 100
-    
+
     md += "| **Total / Average** | - | **{:.2f}s** | **{:.3f}s** | **{:.1f}x** | **{:,}** | **{}** | **${:.3f}** | **${:.3f}** | **{:.2f}%** |\n".format(
-        total_cold_time, total_warm_time, avg_speedup, total_cold_tokens, total_warm_tokens, total_cold_cost, total_warm_cost, total_savings
+        total_cold_time,
+        total_warm_time,
+        avg_speedup,
+        total_cold_tokens,
+        total_warm_tokens,
+        total_cold_cost,
+        total_warm_cost,
+        total_savings,
     )
-    
+
     print("\n" + md)
-    
-    # Save benchmark results
-    benchmark_file = Path("BENCHMARKS.md")
+
+    # Save local benchmark artifact. The canonical public benchmark document is
+    # docs/benchmarks.md; local runs should not create a second public file.
+    benchmark_file = Path(".benchmarks/baseline_latest.md")
+    benchmark_file.parent.mkdir(parents=True, exist_ok=True)
     benchmark_file.write_text(md)
     print(f"\nSaved benchmark results to {benchmark_file.resolve()}")
 
+
 def main():
     asyncio.run(run_benchmarks())
+
 
 if __name__ == "__main__":
     main()

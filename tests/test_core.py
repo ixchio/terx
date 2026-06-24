@@ -4,15 +4,128 @@ TERX Core Tests — DOM extraction, cache operations, VCR writer, URL validation
 
 import tempfile
 import json
+from pathlib import Path
+
+import pytest
 
 from terx.dom.extractor import (
     DOMExtractor,
     AXElement,
+    DOMSnapshot,
     hash_similarity,
     _structural_hash,
     _build_role_sequence,
 )
-from terx.cache.cache import MemoryCache, MuscleMemorycache, CDPCommand, _task_key
+from terx.cache.cache import (
+    MemoryCache,
+    MuscleMemorycache,
+    CDPCommand,
+    MissingReplayVariable,
+    MutationDriftError,
+    PostconditionFailed,
+    _task_key,
+    session_for,
+)
+
+
+class FakeBridge:
+    def __init__(
+        self,
+        snapshot: DOMSnapshot | None = None,
+        text: str = "Logged in",
+        mutation_count: int = 0,
+    ):
+        self.snapshot = snapshot or _snapshot(email_backend_id=101, password_backend_id=102)
+        self.text = text
+        self.mutation_count = mutation_count
+        self.sent: list[tuple[str, dict]] = []
+        self._recorders = []
+
+    def add_recorder(self, recorder):
+        self._recorders.append(recorder)
+
+    def remove_recorder(self, recorder):
+        if recorder in self._recorders:
+            self._recorders.remove(recorder)
+
+    async def send(self, method: str, params: dict | None = None) -> dict:
+        params = params or {}
+        self.sent.append((method, params))
+        result = self._result_for(method, params)
+        for recorder in list(self._recorders):
+            recorder(method, params, result, 1.0)
+        return result
+
+    async def send_internal(self, method: str, params: dict | None = None) -> dict:
+        params = params or {}
+        expression = params.get("expression", "")
+        if "__TERX_MUTATION_GUARD__" in expression and "return true" in expression:
+            return {"result": {"value": True}}
+        if "__TERX_MUTATION_GUARD__ ?" in expression:
+            return {"result": {"value": self.mutation_count}}
+        if "delete window.__TERX_MUTATION_GUARD__" in expression:
+            return {}
+        if "window.location.href" in expression:
+            return {"result": {"value": self.snapshot.url}}
+        if "document.title" in expression:
+            return {"result": {"value": self.snapshot.title}}
+        if "innerText" in expression:
+            return {"result": {"value": self.text}}
+        if "querySelector" in expression:
+            return {"result": {"value": True}}
+        if method == "Page.captureScreenshot":
+            return {"data": ""}
+        return self._result_for(method, params)
+
+    async def wait_for_load(self, timeout: float = 10.0) -> None:
+        return None
+
+    def _result_for(self, method: str, params: dict) -> dict:
+        if method == "DOM.resolveNode":
+            return {"object": {"objectId": f"object-{params.get('backendNodeId')}"}}
+        if method == "Runtime.callFunctionOn":
+            return {"result": {"value": True}}
+        return {}
+
+
+def _snapshot(email_backend_id=101, password_backend_id=102) -> DOMSnapshot:
+    elements = [
+        AXElement(
+            id=1,
+            role="textbox",
+            semantic_name="Email",
+            current_value="",
+            node_id="email",
+            backend_dom_id=email_backend_id,
+            depth=1,
+        ),
+        AXElement(
+            id=2,
+            role="textbox",
+            semantic_name="Password",
+            current_value="",
+            node_id="password",
+            backend_dom_id=password_backend_id,
+            depth=1,
+        ),
+        AXElement(
+            id=3,
+            role="button",
+            semantic_name="Login",
+            current_value="",
+            node_id="login",
+            backend_dom_id=103,
+            depth=1,
+        ),
+    ]
+    role_sequence = _build_role_sequence(elements)
+    return DOMSnapshot(
+        url="https://example.com/login",
+        title="Login",
+        elements=elements,
+        structural_hash=_structural_hash(role_sequence),
+        role_sequence=role_sequence,
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -242,6 +355,35 @@ def test_cache_stats():
         assert stats["domains"] == 2
 
 
+def test_cli_inspect_cache_redacts_fields():
+    from terx.cli import _inspect_cache
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = f"{tmp}/test.db"
+        cache = MemoryCache(db_path=db_path, vcr_dir=f"{tmp}/vcr")
+        cache.store(
+            "example.com",
+            "h1",
+            "seq",
+            "task",
+            [
+                CDPCommand(
+                    "Input.insertText",
+                    {"text": "{{password}}"},
+                    {},
+                    1.0,
+                    metadata={"redacted": True, "placeholder": "{{password}}"},
+                )
+            ],
+        )
+
+        rows = _inspect_cache(Path(db_path), limit=5)
+
+        assert rows[0]["domain"] == "example.com"
+        assert rows[0]["commands"] == 1
+        assert rows[0]["redacted_fields"] == ["password"]
+
+
 def test_backwards_compat_alias():
     """MuscleMemorycache should still work as an alias."""
     assert MuscleMemorycache is MemoryCache
@@ -295,6 +437,259 @@ def test_cache_store_preserves_first_version():
         hit = cache.lookup("example.com", "btn:Login:1", "login to app")
         assert hit is not None
         assert hit.commands[0].params["x"] == 10  # First version preserved
+
+
+# ------------------------------------------------------------------ #
+# Recording / Replay Integration Tests                                #
+# ------------------------------------------------------------------ #
+
+
+@pytest.mark.asyncio
+async def test_recording_redacts_and_parameterizes_inputs(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        bridge = FakeBridge()
+
+        async with session_for(
+            cache,
+            bridge,
+            "login",
+            variables={"email": "user@example.com", "password": "super-secret"},
+            postcondition={"text_contains": "Logged in"},
+        ) as ctx:
+            assert not ctx.hit
+            await bridge.send("DOM.focus", {"backendNodeId": 101})
+            await bridge.send("Input.insertText", {"text": "user@example.com"})
+            await bridge.send("DOM.focus", {"backendNodeId": 102})
+            await bridge.send("Input.insertText", {"text": "super-secret"})
+
+        hit = cache.lookup("example.com", bridge.snapshot.role_sequence, "login")
+        assert hit is not None
+
+        params = [command.params for command in hit.commands]
+        assert {"text": "{{email}}"} in params
+        assert {"text": "{{password}}"} in params
+        assert "super-secret" not in json.dumps([command.__dict__ for command in hit.commands])
+        assert ctx.report is not None
+        assert ctx.report.cache_hit is False
+        assert ctx.report.variables_used == ["email", "password"]
+        assert ctx.report.redacted_fields == ["email", "password"]
+
+
+@pytest.mark.asyncio
+async def test_replay_interpolates_variables_and_remaps_backend_ids(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        record_bridge = FakeBridge()
+
+        async with session_for(
+            cache,
+            record_bridge,
+            "login",
+            variables={"email": "old@example.com", "password": "old-secret"},
+        ) as ctx:
+            await record_bridge.send("DOM.focus", {"backendNodeId": 101})
+            await record_bridge.send("Input.insertText", {"text": "old@example.com"})
+            await record_bridge.send("DOM.focus", {"backendNodeId": 102})
+            await record_bridge.send("Input.insertText", {"text": "old-secret"})
+
+        replay_bridge = FakeBridge(snapshot=_snapshot(email_backend_id=201, password_backend_id=202))
+        async with session_for(
+            cache,
+            replay_bridge,
+            "login",
+            variables={"email": "new@example.com", "password": "new-secret"},
+        ) as ctx:
+            assert ctx.hit
+            await ctx.replay()
+
+        assert ("DOM.focus", {"backendNodeId": 201}) in replay_bridge.sent
+        assert ("Input.insertText", {"text": "new@example.com"}) in replay_bridge.sent
+        assert ("DOM.focus", {"backendNodeId": 202}) in replay_bridge.sent
+        assert ("Input.insertText", {"text": "new-secret"}) in replay_bridge.sent
+        assert ctx.report is not None
+        assert ctx.report.cache_hit is True
+        assert ctx.report.commands_replayed == 4
+        assert ctx.report.mutation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_requires_missing_secret_variable(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        record_bridge = FakeBridge()
+
+        async with session_for(cache, record_bridge, "login") as ctx:
+            await record_bridge.send("DOM.focus", {"backendNodeId": 102})
+            await record_bridge.send("Input.insertText", {"text": "redacted-by-default"})
+
+        replay_bridge = FakeBridge()
+        async with session_for(cache, replay_bridge, "login") as ctx:
+            assert ctx.hit
+            with pytest.raises(MissingReplayVariable):
+                await ctx.replay()
+
+
+@pytest.mark.asyncio
+async def test_variable_names_are_normalized_for_placeholders(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        bridge = FakeBridge()
+
+        async with session_for(cache, bridge, "api login", variables={"api-key": "abc123"}) as ctx:
+            await bridge.send("DOM.focus", {"backendNodeId": 102})
+            await bridge.send("Input.insertText", {"text": "abc123"})
+
+        hit = cache.lookup("example.com", bridge.snapshot.role_sequence, "api login")
+        assert hit is not None
+        assert any(command.params == {"text": "{{api_key}}"} for command in hit.commands)
+
+        replay_bridge = FakeBridge()
+        async with session_for(cache, replay_bridge, "api login", variables={"api-key": "xyz789"}) as ctx:
+            assert ctx.hit
+            await ctx.replay()
+
+        assert ("Input.insertText", {"text": "xyz789"}) in replay_bridge.sent
+
+
+@pytest.mark.asyncio
+async def test_redact_all_text_env_forces_placeholder(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+    monkeypatch.setenv("TERX_REDACT_ALL_TEXT", "1")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        bridge = FakeBridge()
+
+        async with session_for(cache, bridge, "capture email") as ctx:
+            await bridge.send("DOM.focus", {"backendNodeId": 101})
+            await bridge.send("Input.insertText", {"text": "not-a-variable@example.com"})
+
+        hit = cache.lookup("example.com", bridge.snapshot.role_sequence, "capture email")
+        assert hit is not None
+        assert any(command.params == {"text": "{{email}}"} for command in hit.commands)
+        assert ctx.report is not None
+        assert ctx.report.redacted_fields == ["email"]
+
+
+@pytest.mark.asyncio
+async def test_mutation_guard_blocks_drifting_replay(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        record_bridge = FakeBridge()
+
+        async with session_for(cache, record_bridge, "login", variables={"email": "old@example.com"}):
+            await record_bridge.send("DOM.focus", {"backendNodeId": 101})
+            await record_bridge.send("Input.insertText", {"text": "old@example.com"})
+
+        replay_bridge = FakeBridge(mutation_count=25)
+        async with session_for(
+            cache,
+            replay_bridge,
+            "login",
+            variables={"email": "new@example.com"},
+            mutation_threshold=20,
+        ) as ctx:
+            assert ctx.hit
+            with pytest.raises(MutationDriftError):
+                await ctx.replay()
+
+
+@pytest.mark.asyncio
+async def test_postcondition_failure_blocks_cache(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        bridge = FakeBridge(text="Still on login")
+
+        with pytest.raises(PostconditionFailed):
+            async with session_for(
+                cache,
+                bridge,
+                "login",
+                postcondition={"text_contains": "Logged in"},
+            ):
+                await bridge.send("DOM.focus", {"backendNodeId": 101})
+                await bridge.send("Input.insertText", {"text": "user@example.com"})
+
+        assert cache.lookup("example.com", bridge.snapshot.role_sequence, "login") is None
+
+
+@pytest.mark.asyncio
+async def test_browser_use_adapter_wraps_agent_run(monkeypatch):
+    from terx.integrations.browser_use import wrap_browser_use
+
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+
+    class BrowserUseLikeAgent:
+        task = "login"
+
+        def __init__(self, bridge):
+            self.bridge = bridge
+            self.runs = 0
+
+        async def run(self):
+            self.runs += 1
+            await self.bridge.send("DOM.focus", {"backendNodeId": 101})
+            await self.bridge.send("Input.insertText", {"text": "agent@example.com"})
+            return "agent-result"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        bridge = FakeBridge()
+        agent = BrowserUseLikeAgent(bridge)
+        wrapped = wrap_browser_use(
+            agent,
+            cache=cache,
+            bridge=bridge,
+            variables={"email": "agent@example.com"},
+        )
+
+        miss = await wrapped.run()
+        assert miss.cache_hit is False
+        assert miss.value == "agent-result"
+        assert miss.commands_recorded == 2
+        assert agent.runs == 1
+
+        hit = await wrapped.run()
+        assert hit.cache_hit is True
+        assert hit.value is None
+        assert agent.runs == 1
 
 
 # ------------------------------------------------------------------ #

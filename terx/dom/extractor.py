@@ -91,20 +91,20 @@ class DOMExtractor:
 
     async def snapshot(self, bridge: CDPBridge) -> DOMSnapshot:
         """Extract the full AX tree for the current page."""
-        # Get URL via Runtime.evaluate (reliable, no extra params needed)
-        url_result = await bridge.send("Runtime.evaluate", {
+        # Use send_internal() so snapshots never pollute task recordings.
+        url_result = await bridge.send_internal("Runtime.evaluate", {
             "expression": "window.location.href"
         })
         url = url_result.get("result", {}).get("value", "")
 
         # Get title the same way (avoids Target.getTargetInfo needing targetId)
-        title_result = await bridge.send("Runtime.evaluate", {
+        title_result = await bridge.send_internal("Runtime.evaluate", {
             "expression": "document.title"
         })
         title = title_result.get("result", {}).get("value", "")
 
         # Get full accessibility tree (no extra params — fetchRelativeNodes doesn't exist)
-        ax_result = await bridge.send("Accessibility.getFullAXTree")
+        ax_result = await bridge.send_internal("Accessibility.getFullAXTree")
         nodes: list[dict] = ax_result.get("nodes", [])
 
         elements = self._extract_interactable(nodes)
@@ -150,6 +150,7 @@ class DOMExtractor:
 
             # Stable ID based on role + semantic_name (NOT live value — stays
             # constant even if the user typed something into a form field).
+            # Keep public element IDs compact enough for LLM/tool use.
             id_input = f"{role}:{semantic_name}:{parent_id}".encode()
             stable_id = int(hashlib.md5(id_input).hexdigest()[:8], 16) % 100_000
 
@@ -164,11 +165,19 @@ class DOMExtractor:
             )
             elements.append(el)
 
-        # Deduplicate stable IDs (hash collision fallback)
+        # Deduplicate stable IDs (hash collision fallback with secondary hash)
         seen_ids: set[int] = set()
-        for el in elements:
+        for idx, el in enumerate(elements):
+            collision_count = 0
             while el.id in seen_ids:
-                el.id = (el.id + 1) % 100_000
+                # Use secondary hash with collision counter to avoid clustering
+                id_input = f"{el.role}:{el.semantic_name}:{el.backend_dom_id}:{collision_count}".encode()
+                el.id = int(hashlib.md5(id_input).hexdigest()[:8], 16) % 100_000
+                collision_count += 1
+                if collision_count > 10:  # Prevent infinite loops on pathological cases
+                    # Fallback to sequential ID if too many collisions
+                    el.id = (max(seen_ids) + 1 if seen_ids else idx) % 100_000
+                    break
             seen_ids.add(el.id)
 
         return elements
@@ -227,8 +236,10 @@ def hash_similarity(seq_a: str, seq_b: str) -> float:
     """
     if seq_a == seq_b:
         return 1.0
+    if not seq_a and not seq_b:
+        return 1.0  # Both empty = identical
     if not seq_a or not seq_b:
-        return 0.0
+        return 0.0  # One empty, one not = completely different
 
     # Split into tokens for faster comparison
     tokens_a = seq_a.split("|")

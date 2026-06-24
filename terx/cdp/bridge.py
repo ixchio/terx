@@ -6,6 +6,7 @@ No Playwright. No Selenium. Direct CDP.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import time
@@ -39,7 +40,7 @@ class CDPBridge:
         self.connect_timeout = connect_timeout
 
         self._ws: websockets.WebSocketClientProtocol | None = None
-        self._id_counter: int = 0
+        self._id_counter = itertools.count(1)  # Never overflows
         self._pending: dict[int, asyncio.Future] = {}
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._listener_task: asyncio.Task | None = None
@@ -120,8 +121,7 @@ class CDPBridge:
         if not self._connected or self._ws is None:
             raise RuntimeError("CDPBridge is not connected. Call connect() first.")
 
-        self._id_counter += 1
-        cmd_id = self._id_counter
+        cmd_id = next(self._id_counter)
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[cmd_id] = future
 
@@ -156,8 +156,7 @@ class CDPBridge:
         if not self._connected or self._ws is None:
             raise RuntimeError("CDPBridge is not connected. Call connect() first.")
 
-        self._id_counter += 1
-        cmd_id = self._id_counter
+        cmd_id = next(self._id_counter)
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[cmd_id] = future
 
@@ -225,11 +224,15 @@ class CDPBridge:
                     # Response to a command we sent
                     cmd_id = msg["id"]
                     future = self._pending.pop(cmd_id, None)
-                    if future and not future.done():
-                        if "error" in msg:
-                            future.set_exception(CDPError(msg["error"].get("message", "CDP error")))
-                        else:
-                            future.set_result(msg.get("result", {}))
+                    if future:
+                        try:
+                            if "error" in msg:
+                                future.set_exception(CDPError(msg["error"].get("message", "CDP error")))
+                            else:
+                                future.set_result(msg.get("result", {}))
+                        except asyncio.InvalidStateError:
+                            # Future was already set (timeout or cancellation) - safe to ignore
+                            pass
                 else:
                     # Unsolicited event (DOM mutation, network event, etc.)
                     await self._event_queue.put(msg)
@@ -237,14 +240,20 @@ class CDPBridge:
 
         except ConnectionClosed:
             logger.warning("CDP WebSocket closed unexpectedly")
-            self._connected = False
-            # Fail all pending futures
-            for future in self._pending.values():
-                if not future.done():
-                    future.set_exception(ConnectionClosed(None, None))
-            self._pending.clear()
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logger.error("Unexpected error in CDP listener: %s", e)
+        finally:
+            # Always clean up pending futures
+            self._connected = False
+            for future in self._pending.values():
+                if not future.done():
+                    try:
+                        future.set_exception(ConnectionClosed(None, None))
+                    except asyncio.InvalidStateError:
+                        pass
+            self._pending.clear()
 
 
 class CDPError(Exception):

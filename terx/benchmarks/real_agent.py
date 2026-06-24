@@ -24,12 +24,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import socket
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
+from typing import Any
 
 # Load .env if present (pip install python-dotenv, or ignored if not installed)
 try:
@@ -38,7 +42,10 @@ try:
 except ImportError:
     pass
 
-from groq import Groq
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None
 
 from terx.cdp.session import BrowserSession
 from terx.cache.cache import MemoryCache, session_for
@@ -173,16 +180,26 @@ HTML = r"""<!DOCTYPE html>
 </body></html>"""
 
 TASKS = [
-    ("User Login Flow",         1, ["email@example.com", "Password", "Login"]),
-    ("Search and Filter",       2, ["Search products...", "Category: All", "Search"]),
-    ("Multi-step Signup Form",  3, ["First Name", "Last Name", "Email Address", "I agree to terms", "Sign Up"]),
-    ("E-commerce Product Page", 4, ["Size: M", "Quantity", "Add to Cart"]),
-    ("Settings Toggle Options", 5, ["Enable Notifications", "Dark Mode", "Save Settings"]),
-    ("Data Table Pagination",   6, ["Select Row 1", "Next Page"]),
-    ("Support Ticket Submit",   7, ["Subject", "Describe your issue...", "Submit Ticket"]),
-    ("Fuzzy Search Navigation", 8, ["Type query...", "Fuzzy Search"]),
-    ("Profile Update Flow",     9, ["Bio...", "USA", "Update Profile"]),
-    ("Complex Nested Form",    10, ["Name", "Accept all terms", "Finish Benchmark"]),
+    ("User Login Flow", 1, ["email@example.com", "Password", "Login"], "Logged in"),
+    ("Search and Filter", 2, ["Search products...", "Category: All", "Search"], "Search complete"),
+    (
+        "Multi-step Signup Form",
+        3,
+        ["First Name", "Last Name", "Email Address", "I agree to terms", "Sign Up"],
+        "Account created",
+    ),
+    ("E-commerce Product Page", 4, ["Size: M", "Quantity", "Add to Cart"], "Added to cart"),
+    (
+        "Settings Toggle Options",
+        5,
+        ["Enable Notifications", "Dark Mode", "Save Settings"],
+        "Settings saved",
+    ),
+    ("Data Table Pagination", 6, ["Select Row 1", "Next Page"], "Page advanced"),
+    ("Support Ticket Submit", 7, ["Subject", "Describe your issue...", "Submit Ticket"], "Ticket submitted"),
+    ("Fuzzy Search Navigation", 8, ["Type query...", "Fuzzy Search"], "Search done"),
+    ("Profile Update Flow", 9, ["Bio...", "USA", "Update Profile"], "Profile updated"),
+    ("Complex Nested Form", 10, ["Name", "Accept all terms", "Finish Benchmark"], "Done!"),
 ]
 
 # ------------------------------------------------------------------ #
@@ -240,10 +257,11 @@ def _cost(in_tok: int, out_tok: int) -> float:
 
 async def run_llm_agent(
     bridge,
-    client: Groq,
+    client: Any,
     task_name: str,
     task_idx: int,
     url: str,
+    expected_text: str,
 ) -> AgentRun:
     """Real LLM agent loop with conversation history. Measures actual API token counts.
     NOTE: caller must navigate to `url` BEFORE entering session_for, so TERX
@@ -358,11 +376,21 @@ async def run_llm_agent(
 
     elapsed = time.perf_counter() - t0
     cost    = _cost(total_input_tokens, total_output_tokens)
+    postcondition_ok = await _page_contains(bridge, expected_text)
     return AgentRun(
         task_name=task_name, wall_time_s=elapsed,
         input_tokens=total_input_tokens, output_tokens=total_output_tokens,
-        steps=steps, cost_usd=cost, success=True,
+        steps=steps, cost_usd=cost, success=postcondition_ok,
+        error="" if postcondition_ok else f"Postcondition failed: {expected_text}",
     )
+
+
+async def _page_contains(bridge, text: str) -> bool:
+    result = await bridge.send_internal(
+        "Runtime.evaluate",
+        {"expression": "document.body?.innerText || ''", "returnByValue": True},
+    )
+    return text in result.get("result", {}).get("value", "")
 
 
 
@@ -377,7 +405,13 @@ class ReplayRun:
     hit: bool
 
 
-async def run_terx_replay(bridge, cache: MemoryCache, task_name: str, url: str) -> ReplayRun:
+async def run_terx_replay(
+    bridge,
+    cache: MemoryCache,
+    task_name: str,
+    url: str,
+    expected_text: str,
+) -> ReplayRun:
     # Hard reload to get a clean DOM — the cold run may have left buttons disabled
     # or success messages visible, which would change the structural hash.
     await bridge.send("Page.navigate", {"url": "about:blank"})
@@ -387,11 +421,31 @@ async def run_terx_replay(bridge, cache: MemoryCache, task_name: str, url: str) 
     await asyncio.sleep(0.1)  # Let JS hashchange handler run
 
     t0 = time.perf_counter()
-    async with session_for(cache, bridge, task_name) as ctx:
+    async with session_for(
+        cache,
+        bridge,
+        task_name,
+        postcondition={"text_contains": expected_text},
+        redact_secrets=False,
+    ) as ctx:
         if ctx.hit:
             await ctx.replay()
     t1 = time.perf_counter()
     return ReplayRun(task_name=task_name, wall_time_s=t1 - t0, hit=ctx.hit)
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _chrome_binary() -> str:
+    for name in ("google-chrome", "chromium", "chromium-browser"):
+        binary = shutil.which(name)
+        if binary:
+            return binary
+    raise RuntimeError("Chrome/Chromium not found")
 
 
 # ------------------------------------------------------------------ #
@@ -399,40 +453,59 @@ async def run_terx_replay(bridge, cache: MemoryCache, task_name: str, url: str) 
 # ------------------------------------------------------------------ #
 
 async def run():
+    if Groq is None:
+        raise SystemExit('Install benchmark extras first: pip install "terx[benchmark]"')
+
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("Set GROQ_API_KEY environment variable.")
 
     client = Groq(api_key=api_key)
+    port = int(os.environ.get("TERX_BENCH_PORT") or _free_port())
+    cdp_port = int(os.environ.get("TERX_CDP_PORT") or _free_port())
+    chrome_binary = _chrome_binary()
+    task_limit = int(os.environ.get("TERX_BENCH_TASK_LIMIT") or len(TASKS))
+    selected_tasks = TASKS[: max(1, min(task_limit, len(TASKS)))]
 
     print(f"🤖 Model:  {GROQ_MODEL}")
-    print(f"📋 Tasks:  {len(TASKS)}")
+    print(f"📋 Tasks:  {len(selected_tasks)}")
     print("=" * 64)
 
     print("\n🚀 Starting local benchmark server...")
-    server = start_server(PORT)
+    server = start_server(port)
 
     print("🌐 Launching headless Chrome...")
+    user_data_dir = tempfile.TemporaryDirectory()
+    cache_dir = tempfile.TemporaryDirectory()
     chrome = subprocess.Popen(
-        ["google-chrome", "--headless", "--remote-debugging-port=9222",
-         "--disable-gpu", "--no-sandbox"],
+        [
+            chrome_binary,
+            "--headless=new",
+            f"--remote-debugging-port={cdp_port}",
+            f"--user-data-dir={user_data_dir.name}",
+            "--disable-gpu",
+            "--no-sandbox",
+            "about:blank",
+        ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     await asyncio.sleep(2)
 
-    cache = MemoryCache()
-    cache.invalidate(f"localhost:{PORT}")
+    cache = MemoryCache(
+        db_path=Path(cache_dir.name) / "cache.db",
+        vcr_dir=Path(cache_dir.name) / "vcr",
+    )
 
     agent_results: list[AgentRun]  = []
     replay_results: list[ReplayRun] = []
 
     try:
-        async with BrowserSession() as session:
+        async with BrowserSession(port=cdp_port) as session:
             bridge = session.bridge()
 
-            for task_name, task_idx, _ in TASKS:
-                url = f"http://localhost:{PORT}/#task{task_idx}"
-                print(f"\n▶ [{task_idx:02d}/10] {task_name}")
+            for case_no, (task_name, task_idx, _, expected_text) in enumerate(selected_tasks, 1):
+                url = f"http://localhost:{port}/#task{task_idx}"
+                print(f"\n▶ [{case_no:02d}/{len(selected_tasks):02d}] {task_name}")
 
                 # --- PHASE 1: Real LLM agent ---
                 # CRITICAL: navigate BEFORE session_for so TERX snapshots the
@@ -443,10 +516,18 @@ async def run():
                 await bridge.wait_for_load()
 
                 agent_t0 = time.perf_counter()
-                async with session_for(cache, bridge, task_name) as _cold_ctx:
+                async with session_for(
+                    cache,
+                    bridge,
+                    task_name,
+                    postcondition={"text_contains": expected_text},
+                    redact_secrets=False,
+                ) as _cold_ctx:
                     agent_run = await run_llm_agent(
-                        bridge, client, task_name, task_idx, url
+                        bridge, client, task_name, task_idx, url, expected_text
                     )
+                    if not agent_run.success:
+                        raise RuntimeError(agent_run.error)
                 agent_elapsed = time.perf_counter() - agent_t0
 
                 agent_results.append(agent_run)
@@ -461,14 +542,20 @@ async def run():
 
                 # --- PHASE 2: TERX warm replay ---
                 print("   ⚡ TERX replay...", end="", flush=True)
-                replay = await run_terx_replay(bridge, cache, task_name, url)
+                replay = await run_terx_replay(bridge, cache, task_name, url, expected_text)
                 replay_results.append(replay)
                 hit_str = "HIT ✓" if replay.hit else "MISS ✗"
                 print(f" {hit_str} {replay.wall_time_s:.3f}s | 0 tokens | $0.0000")
 
     finally:
         chrome.terminate()
+        try:
+            chrome.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            chrome.kill()
         server.shutdown()
+        user_data_dir.cleanup()
+        cache_dir.cleanup()
 
     # ------------------------------------------------------------------ #
     # Results table                                                        #
@@ -516,11 +603,14 @@ async def run():
           f"{total_agent_tokens:>8,} ${total_agent_cost:>7.4f} "
           f"{hits}/{len(rows)}")
 
-    # Write BENCHMARKS.md
+    # Write local benchmark artifact. The canonical public benchmark document is
+    # docs/benchmarks.md; local runs should not create a second public file.
     md = _generate_md(rows, total_agent_time, total_replay_time, avg_spd,
                       total_agent_tokens, total_agent_cost, hits)
-    Path("BENCHMARKS.md").write_text(md)
-    print("\n✅ Saved → BENCHMARKS.md")
+    benchmark_file = Path(".benchmarks/real_agent_latest.md")
+    benchmark_file.parent.mkdir(parents=True, exist_ok=True)
+    benchmark_file.write_text(md)
+    print(f"\n✅ Saved → {benchmark_file}")
     print(f"   Hit rate: {hits}/{len(rows)} tasks cached")
     print(f"   Total savings: ${total_agent_cost:.4f} → $0.0000 per repeat run")
 

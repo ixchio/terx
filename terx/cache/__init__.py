@@ -1,9 +1,27 @@
 from terx.cache.cache import (
-    MemoryCache, MuscleMemorycache, CDPCommand, CachedSequence,
-    ReplayCostLedger, CacheReplayError, session_for
+    CDPCommand,
+    CachedSequence,
+    CacheReplayError,
+    MemoryCache,
+    MissingReplayVariable,
+    MuscleMemorycache,
+    MutationDriftError,
+    PostconditionFailed,
+    ReplayCostLedger,
+    ReplayReport,
+    session_for,
 )
 
 __all__ = [
-    "MemoryCache", "MuscleMemorycache", "CDPCommand", "CachedSequence",
-    "ReplayCostLedger", "CacheReplayError", "session_for"
+    "MemoryCache",
+    "MuscleMemorycache",
+    "CDPCommand",
+    "CachedSequence",
+    "ReplayCostLedger",
+    "ReplayReport",
+    "CacheReplayError",
+    "MissingReplayVariable",
+    "PostconditionFailed",
+    "MutationDriftError",
+    "session_for",
 ]

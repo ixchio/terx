@@ -29,17 +29,17 @@ Real measured performance of TERX vs a live LLM agent loop.
 
 | Task | LLM Steps | Agent (cold) | TERX (warm) | Speedup | Tokens | Cost |
 |:-----|:---------:|-------------:|------------:|--------:|-------:|-----:|
-| User Login Flow | 4 | 2.93s | 0.078s | **37.7x** | 2,090 | $0.0076 |
-| Search and Filter | 5 | 3.99s | 0.101s | **39.7x** | 3,533 | $0.0136 |
-| Multi-step Signup Form | 2 | 1.54s | 0.062s | **25.0x** | 1,035 | $0.0045 |
-| E-commerce Product Page | 5 | 25.97s | 0.091s | **286.0x** | 3,811 | $0.0161 |
-| Settings Toggle Options | 4 | 16.01s | 0.103s | **155.9x** | 2,451 | $0.0095 |
-| Data Table Pagination | 12 | 90.84s | 0.259s | **350.4x** | 12,479 | $0.0567 |
-| Support Ticket Submit | 4 | 15.40s | 0.101s | **152.2x** | 2,135 | $0.0078 |
-| Fuzzy Search Navigation | 3 | 11.85s | 0.089s | **132.9x** | 1,459 | $0.0062 |
-| Profile Update Flow | 3 | 12.35s | 0.094s | **131.2x** | 1,854 | $0.0086 |
-| Complex Nested Form | 4 | 17.74s | 0.110s | **161.5x** | 2,146 | $0.0082 |
-| **Total / Average** | — | **198.62s** | **1.087s** | **🔥 182.7x** | **32,993** | **$0.1388** |
+| User Login Flow | 4 | 3.05s | 0.090s | **34.0x** | 1,985 | $0.0065 |
+| Search and Filter | 4 | 17.82s | 0.099s | **179.3x** | 2,634 | $0.0108 |
+| Multi-step Signup Form | 6 | 41.05s | 0.103s | **399.4x** | 4,339 | $0.0142 |
+| E-commerce Product Page | 4 | 9.84s | 0.100s | **98.1x** | 2,798 | $0.0123 |
+| Settings Toggle Options | 4 | 15.42s | 0.100s | **154.5x** | 2,131 | $0.0082 |
+| Data Table Pagination | 3 | 11.27s | 0.088s | **128.7x** | 1,756 | $0.0093 |
+| Support Ticket Submit | 4 | 18.35s | 0.100s | **184.2x** | 2,130 | $0.0078 |
+| Fuzzy Search Navigation | 3 | 10.41s | 0.083s | **124.8x** | 1,393 | $0.0055 |
+| Profile Update Flow | 4 | 17.20s | 0.077s | **223.7x** | 2,544 | $0.0104 |
+| Complex Nested Form | 4 | 16.51s | 0.086s | **192.2x** | 2,072 | $0.0074 |
+| **Total / Average** | — | **160.93s** | **0.926s** | **173.9x** | **23,782** | **$0.0925** |
 
 **TERX warm run: 0 tokens · $0.0000 — every time.**
 
@@ -47,7 +47,9 @@ Real measured performance of TERX vs a live LLM agent loop.
 
 ## What these numbers mean
 
-The agent used a **reasoning model** (`openai/gpt-oss-120b`), which is slower and more expensive than standard LLMs. On complex tasks like "Data Table Pagination" it took 12 LLM steps and 90 seconds. TERX replayed that in 259ms.
+The agent used a **reasoning model** (`openai/gpt-oss-120b`), which is slower
+and more expensive than standard LLMs. The cold agent loop spent 160.93s across
+10 tasks. TERX replayed the same recorded workflows in 0.926s total.
 
 With a faster model (GPT-4o-mini, Llama 3.3 70B), cold runs would be 1–3s per task. TERX replay stays the same regardless — it replays CDP commands, not LLM calls.
 
@@ -79,7 +81,7 @@ Zero LLM calls. The page state after replay is identical to after the original a
 # Clone and install
 git clone https://github.com/ixchio/terx.git
 cd terx
-pip install -e ".[dev]"
+pip install -e ".[benchmark]"
 
 # Set your key (never hardcode it)
 cp .env.example .env
@@ -88,7 +90,15 @@ cp .env.example .env
 # Load env and run
 export $(grep -v '^#' .env | xargs)
 python -m terx.benchmarks.real_agent
-# → prints results table and writes BENCHMARKS.md
+# → prints results table and writes .benchmarks/real_agent_latest.md
+```
+
+For a fast local production-path smoke test without an API key:
+
+```bash
+terx demo
+terx eval-local
+# → records local workflows, replays with variables, checks postconditions
 ```
 
 > **Security note:** Never commit `.env`. It's in `.gitignore`. Use `cp .env.example .env` and fill locally.
@@ -101,12 +111,12 @@ python -m terx.benchmarks.real_agent
 ================================================================
 
 ▶ [01/10] User Login Flow
-   🧠 LLM agent running... ✓ 2.93s | 2,090 tokens | $0.0076 | 4 LLM steps
-   ⚡ TERX replay... HIT ✓ 0.078s | 0 tokens | $0.0000
+   🧠 LLM agent running... ✓ 3.11s | 1,985 tokens | $0.0065 | 4 LLM steps
+   ⚡ TERX replay... HIT ✓ 0.090s | 0 tokens | $0.0000
 
 ...
 
-TOTAL / AVERAGE   —  198.62s  1.087s  182.7x  32,993  $0.1388  10/10
+TOTAL / AVERAGE   —  160.93s  0.926s  173.9x  23,782  $0.0925  10/10
 ```
 
 Source: [`terx/benchmarks/real_agent.py`](https://github.com/ixchio/terx/blob/main/terx/benchmarks/real_agent.py)
