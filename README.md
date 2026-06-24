@@ -60,7 +60,7 @@ Real measurement. Real LLM (`openai/gpt-oss-120b` via Groq). Token counts from A
 
 Cache hit rate: **10/10**. Reproduce: `GROQ_API_KEY=... python -m terx.benchmarks.real_agent`
 
-Full methodology → [docs/benchmarks.md](docs/benchmarks.md)
+Full methodology → [docs/benchmarks.md](https://github.com/ixchio/terx/blob/main/docs/benchmarks.md)
 
 No API key proof path:
 
@@ -242,7 +242,7 @@ Task wrappers also return `report` objects so MCP clients can audit what TERX di
 
 ## Docs
 
-[ixchio.github.io/terx](https://ixchio.github.io/terx) · [Quick Start](docs/quickstart.md) · [Benchmarks](docs/benchmarks.md) · [Architecture](docs/development.md) · [Project Structure](docs/project-structure.md) · [Stagehand](docs/stagehand.md) · [Changelog](docs/changelog.md)
+[ixchio.github.io/terx](https://ixchio.github.io/terx) · [Quick Start](https://github.com/ixchio/terx/blob/main/docs/quickstart.md) · [Benchmarks](https://github.com/ixchio/terx/blob/main/docs/benchmarks.md) · [Architecture](https://github.com/ixchio/terx/blob/main/docs/development.md) · [Project Structure](https://github.com/ixchio/terx/blob/main/docs/project-structure.md) · [Stagehand](https://github.com/ixchio/terx/blob/main/docs/stagehand.md) · [Changelog](https://github.com/ixchio/terx/blob/main/docs/changelog.md)
 
 ---
 
