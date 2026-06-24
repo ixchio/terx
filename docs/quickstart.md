@@ -131,9 +131,9 @@ redacted placeholder names without printing secret values.
 
 ## Security Notes
 
-TERX stores replayable browser commands locally in SQLite. Treat `.terx/` and
-`.vcr/` as sensitive if your workflows type passwords, tokens, or customer data.
-Both directories are ignored by this repository's `.gitignore`.
+TERX stores replayable browser commands and audit JSONL locally under `.terx/`.
+Treat that directory as sensitive if your workflows type passwords, tokens, or
+customer data. It is ignored by this repository's `.gitignore`.
 
 When `variables` are supplied, matching typed values are stored as placeholders
 such as `{{email}}`. Password/token/API-key fields are redacted by default even

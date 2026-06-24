@@ -126,7 +126,7 @@ async def run_suite() -> dict[str, Any]:
 
     cache = MemoryCache(
         db_path=Path(cache_dir.name) / "cache.db",
-        vcr_dir=Path(cache_dir.name) / "vcr",
+        audit_dir=Path(cache_dir.name) / "audit",
     )
     base_url = f"http://127.0.0.1:{http_port}/"
 

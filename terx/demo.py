@@ -115,7 +115,7 @@ async def run_demo() -> None:
     cache_dir = tempfile.TemporaryDirectory()
     cache = MemoryCache(
         db_path=Path(cache_dir.name) / "cache.db",
-        vcr_dir=Path(cache_dir.name) / "vcr",
+        audit_dir=Path(cache_dir.name) / "audit",
     )
     url = f"http://127.0.0.1:{PORT}/"
 
@@ -154,7 +154,7 @@ async def run_demo() -> None:
 
         stats = cache.stats()
         print(f"cache stats: {stats}")
-        print(f"vcr files: {len(list((Path(cache_dir.name) / 'vcr').glob('*.vcr')))}")
+        print(f"audit files: {len(list((Path(cache_dir.name) / 'audit').glob('*.jsonl')))}")
     finally:
         chrome.terminate()
         try:

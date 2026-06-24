@@ -493,7 +493,7 @@ async def run():
 
     cache = MemoryCache(
         db_path=Path(cache_dir.name) / "cache.db",
-        vcr_dir=Path(cache_dir.name) / "vcr",
+        audit_dir=Path(cache_dir.name) / "audit",
     )
 
     agent_results: list[AgentRun]  = []

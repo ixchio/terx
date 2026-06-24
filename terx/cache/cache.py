@@ -5,7 +5,7 @@ Records successful CDP action sequences keyed by (domain, structural_hash, task)
 On cache hit: replays raw CDP commands directly — zero LLM tokens.
 On cache miss: lets the agent reason normally, then caches the result.
 
-Writes sessions in .vcr format (compatible with Agent VCR).
+Writes TERX audit JSONL files for recorded and replayed browser sessions.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Cache hit threshold — role sequences more similar than this are treated as the same page
 SIMILARITY_THRESHOLD = 0.85
 SSIM_THRESHOLD = 0.85
-VCR_DIR = Path(".vcr")
+AUDIT_DIR = Path(".terx/audit")
 SCREENSHOT_DIR = Path(".terx/screenshots")
 
 MUTATING_CDP_METHODS = {
@@ -161,11 +161,11 @@ class MemoryCache:
     def __init__(
         self,
         db_path: str | Path = ".terx/cache.db",
-        vcr_dir: str | Path = ".vcr",
+        audit_dir: str | Path = AUDIT_DIR,
         similarity_threshold: float = SIMILARITY_THRESHOLD,
     ) -> None:
         self.db_path = Path(db_path)
-        self.vcr_dir = Path(vcr_dir)
+        self.audit_dir = Path(audit_dir)
         self.similarity_threshold = similarity_threshold
         self._db: sqlite3.Connection | None = None
         self._db_lock = threading.RLock()  # Reentrant: public methods call _ensure_db().
@@ -363,10 +363,10 @@ class MemoryCache:
             return {"total_sequences": total, "total_hits": hits, "domains": domains}
 
     # ------------------------------------------------------------------ #
-    # VCR-format writer (compatible with Agent VCR)                        #
+    # TERX audit writer                                                     #
     # ------------------------------------------------------------------ #
 
-    def write_vcr(
+    def write_audit(
         self,
         session_id: str,
         task_description: str,
@@ -375,17 +375,16 @@ class MemoryCache:
         was_cache_hit: bool,
     ) -> Path:
         """
-        Write a browser session in .vcr JSONL format.
-        Compatible with Agent VCR's VCRPlayer.
+        Write a browser session in TERX audit JSONL format.
 
         Format:
             {"type": "session", "data": {...}}
             {"type": "frame",   "data": {...}}  ← one per CDP command
         """
-        self.vcr_dir.mkdir(parents=True, exist_ok=True)
-        vcr_path = self.vcr_dir / f"{session_id}.vcr"
+        self.audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = self.audit_dir / f"{session_id}.jsonl"
 
-        with vcr_path.open("w") as f:
+        with audit_path.open("w") as f:
             # Session header
             session_record = {
                 "type": "session",
@@ -425,8 +424,8 @@ class MemoryCache:
                 }
                 f.write(json.dumps(frame) + "\n")
 
-        logger.info("Wrote .vcr session → %s (%d frames)", vcr_path, len(commands))
-        return vcr_path
+        logger.info("Wrote audit session → %s (%d frames)", audit_path, len(commands))
+        return audit_path
 
 
 # ------------------------------------------------------------------ #
@@ -439,7 +438,7 @@ class RecordingContext:
     Context returned by session_for().
 
     Records all CDP commands sent through the bridge.
-    On exit: stores them in the cache + writes .vcr file.
+    On exit: stores them in the cache + writes an audit JSONL file.
     """
 
     def __init__(
@@ -588,8 +587,8 @@ class RecordingContext:
             mutation_threshold=self._mutation_threshold if self._mutation_guard else None,
         )
 
-        # Still write a .vcr file for the replay (for audit trail)
-        self._cache.write_vcr(
+        # Still write an audit file for the replay.
+        self._cache.write_audit(
             session_id=self._session_id,
             task_description=self._task,
             commands=self._cached_seq.commands,
@@ -726,8 +725,8 @@ class RecordingContext:
             except Exception as e:
                 logger.warning("Failed to save baseline screenshot for SSIM: %s", e)
 
-            # Write .vcr file
-            self._cache.write_vcr(
+            # Write audit file.
+            self._cache.write_audit(
                 session_id=self._session_id,
                 task_description=self._task,
                 commands=self._recorded_commands,

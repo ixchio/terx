@@ -26,7 +26,7 @@ These paths are local runtime output and must stay ignored:
 
 ```text
 .terx/
-.vcr/
+.jsonl/
 dist/
 build/
 .venv/

@@ -40,7 +40,7 @@ This is the initial alpha release of TERX, featuring a bare-metal CDP bridge, a 
 - **Fuzzy Levenshtein Matcher:** Computes structural similarity on serialized element sequences so UI cache hits survive CSS changes.
 - **Muscle Memory Cache:** SQLite state tracking in WAL mode. Matches, stores, and replays raw CDP command flows.
 - **FastMCP Protocol Integration:** Exposes `browser_*` and `cache_*` tools for agentic integration (e.g. Cursor, Claude Desktop).
-- **VCR Integration:** Automatically writes `.vcr` files outputting JSONL frames that are fully backward compatible with Agent VCR playbacks.
+- **Audit Files:** Automatically writes JSONL audit files for replay inspection and debugging.
 - **Target-Specific React inputs:** Framework-adaptive text injection using JS object resolving and `Runtime.callFunctionOn` instead of fragile focus actions.
 - **LLM-Powered Self-Healing:** Seamless integration with `litellm`. When a replay fails due to DOM shift, the memory layer evaluates the new state and derives updated parameters dynamically without dropping back to a full agent evaluation.
 - **Visual Auditing with SSIM:** Verifies cache replays by taking screenshots pre- and post-cache hit and generating structural similarity indexes (SSIM) to alert agents to silent visual UI drift.

@@ -1,5 +1,5 @@
 """
-TERX Core Tests — DOM extraction, cache operations, VCR writer, URL validation.
+TERX Core Tests — DOM extraction, cache operations, audit writer, URL validation.
 """
 
 import tempfile
@@ -266,7 +266,7 @@ def test_hash_similarity_insertion():
 
 def test_cache_store_and_lookup():
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         commands = [CDPCommand("Page.navigate", {"url": "https://x.com"}, {}, 100.0)]
         cache.store("example.com", "hash123", "btn:Login:1", "login to app", commands)
@@ -279,7 +279,7 @@ def test_cache_store_and_lookup():
 
 def test_cache_miss_on_different_task():
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         commands = [CDPCommand("Input.click", {}, {}, 10.0)]
         cache.store("example.com", "hash1", "btn:Login:1", "login to app", commands)
@@ -291,7 +291,7 @@ def test_cache_miss_on_different_task():
 def test_cache_task_uniqueness():
     """Two different tasks on the same domain+DOM should be stored separately."""
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         cache.store(
             "example.com",
@@ -319,7 +319,7 @@ def test_cache_task_uniqueness():
 
 def test_cache_hit_counter():
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         cache.store("x.com", "h1", "seq", "task", [CDPCommand("M", {}, {}, 1.0)])
         cache.increment_hit("x.com", "h1", _task_key("task"))
@@ -331,7 +331,7 @@ def test_cache_hit_counter():
 
 def test_cache_invalidation():
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         cache.store("kill.com", "h1", "seq", "task", [CDPCommand("M", {}, {}, 1.0)])
         deleted = cache.invalidate("kill.com")
@@ -343,7 +343,7 @@ def test_cache_invalidation():
 
 def test_cache_stats():
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         cache.store("a.com", "h1", "s1", "t1", [CDPCommand("M", {}, {}, 1.0)])
         cache.store("b.com", "h2", "s2", "t2", [CDPCommand("M", {}, {}, 1.0)])
@@ -360,7 +360,7 @@ def test_cli_inspect_cache_redacts_fields():
 
     with tempfile.TemporaryDirectory() as tmp:
         db_path = f"{tmp}/test.db"
-        cache = MemoryCache(db_path=db_path, vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=db_path, audit_dir=f"{tmp}/audit")
         cache.store(
             "example.com",
             "h1",
@@ -392,7 +392,7 @@ def test_backwards_compat_alias():
 def test_cache_multiple_dom_versions_same_task():
     """Multiple DOM structures for the same task should be stored separately."""
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         # Store first version (original DOM)
         commands_v1 = [CDPCommand("Input.click", {"x": 10}, {}, 10.0)]
@@ -423,7 +423,7 @@ def test_cache_multiple_dom_versions_same_task():
 def test_cache_store_preserves_first_version():
     """INSERT OR IGNORE preserves the first successful sequence for same hash."""
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         # Store first version
         commands_v1 = [CDPCommand("Input.click", {"x": 10}, {}, 10.0)]
@@ -452,7 +452,7 @@ async def test_recording_redacts_and_parameterizes_inputs(monkeypatch):
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         bridge = FakeBridge()
 
         async with session_for(
@@ -489,7 +489,7 @@ async def test_replay_interpolates_variables_and_remaps_backend_ids(monkeypatch)
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         record_bridge = FakeBridge()
 
         async with session_for(
@@ -531,7 +531,7 @@ async def test_replay_requires_missing_secret_variable(monkeypatch):
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         record_bridge = FakeBridge()
 
         async with session_for(cache, record_bridge, "login") as ctx:
@@ -553,7 +553,7 @@ async def test_variable_names_are_normalized_for_placeholders(monkeypatch):
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         bridge = FakeBridge()
 
         async with session_for(cache, bridge, "api login", variables={"api-key": "abc123"}) as ctx:
@@ -581,7 +581,7 @@ async def test_redact_all_text_env_forces_placeholder(monkeypatch):
     monkeypatch.setenv("TERX_REDACT_ALL_TEXT", "1")
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         bridge = FakeBridge()
 
         async with session_for(cache, bridge, "capture email") as ctx:
@@ -603,7 +603,7 @@ async def test_mutation_guard_blocks_drifting_replay(monkeypatch):
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         record_bridge = FakeBridge()
 
         async with session_for(cache, record_bridge, "login", variables={"email": "old@example.com"}):
@@ -631,7 +631,7 @@ async def test_postcondition_failure_blocks_cache(monkeypatch):
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         bridge = FakeBridge(text="Still on login")
 
         with pytest.raises(PostconditionFailed):
@@ -670,7 +670,7 @@ async def test_browser_use_adapter_wraps_agent_run(monkeypatch):
             return "agent-result"
 
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
         bridge = FakeBridge()
         agent = BrowserUseLikeAgent(bridge)
         wrapped = wrap_browser_use(
@@ -709,21 +709,21 @@ def test_task_key_different_tasks():
 
 
 # ------------------------------------------------------------------ #
-# VCR Writer Tests                                                      #
+# Audit Writer Tests                                                      #
 # ------------------------------------------------------------------ #
 
 
-def test_vcr_write_format():
-    """VCR files should be valid JSONL with session header + frames."""
+def test_audit_write_format():
+    """Audit files should be valid JSONL with session header + frames."""
     with tempfile.TemporaryDirectory() as tmp:
-        cache = MemoryCache(db_path=f"{tmp}/test.db", vcr_dir=f"{tmp}/vcr")
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
 
         commands = [
             CDPCommand("Page.navigate", {"url": "https://x.com"}, {"frameId": "f1"}, 100.0),
             CDPCommand("Input.dispatchMouseEvent", {"x": 10, "y": 20}, {}, 5.0),
         ]
 
-        vcr_path = cache.write_vcr(
+        audit_path = cache.write_audit(
             session_id="test_session_123",
             task_description="login to app",
             commands=commands,
@@ -731,8 +731,8 @@ def test_vcr_write_format():
             was_cache_hit=False,
         )
 
-        assert vcr_path.exists()
-        lines = vcr_path.read_text().strip().split("\n")
+        assert audit_path.exists()
+        lines = audit_path.read_text().strip().split("\n")
         assert len(lines) == 3  # 1 session header + 2 frames
 
         # Parse each line as valid JSON
