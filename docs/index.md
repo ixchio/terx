@@ -11,6 +11,7 @@ semantic targets, and outcome proof match the current run.
 | [Quick start](quickstart.md) | Python and MCP replay contracts |
 | [Integrations](integrations.md) | Lightweight MCP and Python workflow adapter |
 | [Developer guide](development.md) | Semantic IR, policy boundary, and tests |
+| [v0.4.0 release](release.md) | Shipped behavior, verification, and support boundary |
 | [Benchmarks](benchmarks.md) | Historical benchmark methodology and limits |
 | [Project structure](project-structure.md) | Repository layout |
 | [Stagehand](stagehand.md) | Experimental integration notes |

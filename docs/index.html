@@ -55,6 +55,10 @@ terx mcp-config --client codex
 from terx.integrations.workflow import TerxWorkflow</pre>
   <p>MCP setup is a copy-paste stdio configuration. The Python adapter reuses TERX's existing Chrome CDP connection and local SQLite cache: no Playwright or Selenium dependency, second browser, cloud worker, or resident helper.</p>
 
+  <h2>Released: v0.4.0</h2>
+  <p>v0.4 ships the policy-bound semantic replay contract, exact destructive-approval binding, the dependency-free workflow adapter, and MCP configuration helpers. It is a verified local replay path—not a claim of universal browser or agent compatibility.</p>
+  <p><a href="release.md">Release guide</a> · <a href="https://github.com/ixchio/terx/releases/tag/v0.4.0">GitHub release</a> · <a href="https://pypi.org/project/terx/0.4.0/">PyPI package</a></p>
+
   <h2>Verify</h2>
   <pre>pip install terx
 terx eval-local
