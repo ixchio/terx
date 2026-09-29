@@ -20,7 +20,13 @@ try:
 except ImportError:
     raise ImportError("mcp is required for the TERX server. Install with: pip install mcp")
 
-from terx.cache.cache import MemoryCache, RecordingContext, session_for
+from terx.cache.cache import (
+    ApprovalVerifier,
+    MemoryCache,
+    RecordingContext,
+    ReplayRefused,
+    session_for,
+)
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 
@@ -96,6 +102,7 @@ class TERXServer:
         connect_timeout: float = 10.0,
         heartbeat_interval: float = 5.0,
         screenshot_store_size: int = 20,
+        approval_verifier: ApprovalVerifier | None = None,
     ) -> None:
         self._cache = cache or MemoryCache()
         self._extractor = DOMExtractor()
@@ -107,6 +114,7 @@ class TERXServer:
         self._port = port
         self._connect_timeout = connect_timeout
         self._heartbeat_interval = heartbeat_interval
+        self._approval_verifier = approval_verifier
 
         # Create FastMCP instance
         self.mcp = FastMCP(
@@ -115,7 +123,8 @@ class TERXServer:
                 "TERX browser agent tools. "
                 "Use browser_get_state first to see what's on the page. "
                 "Wrap repeated workflows with browser_task_start and "
-                "browser_task_finish to record and replay them with zero LLM calls."
+                "browser_task_finish only when scope, preconditions, and outcomes are explicit. "
+                "Destructive replay also requires a host-configured consume-once approval verifier."
             ),
         )
         self._register_tools()
@@ -166,7 +175,14 @@ class TERXServer:
         async def browser_task_start(
             task: str,
             variables: dict[str, str] | None = None,
+            scope_id: str | None = None,
+            precondition: dict | None = None,
             postcondition: dict | None = None,
+            route_pattern: str | None = None,
+            workflow_version: int = 1,
+            side_effect: str = "mutating",
+            ttl_seconds: int | None = 86_400,
+            replay_approval: str | None = None,
             mutation_guard: bool = True,
             mutation_threshold: int = 20,
         ) -> dict:
@@ -174,10 +190,30 @@ class TERXServer:
             Start a cacheable browser task.
             If TERX has seen this task on this DOM before, it replays immediately.
             Otherwise, subsequent browser actions are recorded until browser_task_finish.
+
+            For destructive replays, replay_approval is only an opaque token. The
+            host must construct TERXServer with an approval_verifier that verifies
+            and consumes it; the default standalone server fails closed.
             """
             task = task.strip()
             if not task:
                 return {"success": False, "error": "Task description is required."}
+            if (
+                not scope_id
+                or not isinstance(precondition, dict)
+                or not precondition
+                or not isinstance(postcondition, dict)
+                or not postcondition
+            ):
+                return {
+                    "success": False,
+                    "error": "Replay requires scope_id plus non-empty dict precondition and postcondition.",
+                }
+            if side_effect not in {"read_only", "mutating", "destructive"}:
+                return {
+                    "success": False,
+                    "error": "side_effect must be read_only, mutating, or destructive.",
+                }
             if self._task_ctx is not None:
                 return {
                     "success": False,
@@ -192,15 +228,22 @@ class TERXServer:
                 bridge,
                 task,
                 variables=variables or {},
+                scope_id=scope_id,
+                route_pattern=route_pattern,
+                workflow_version=workflow_version,
+                side_effect=side_effect,
+                precondition=precondition,
                 postcondition=postcondition,
+                ttl_seconds=ttl_seconds,
                 mutation_guard=mutation_guard,
                 mutation_threshold=mutation_threshold,
+                approval_verifier=self._approval_verifier,
             )
 
             try:
                 await ctx.__aenter__()
                 if ctx.hit:
-                    await ctx.replay()
+                    await ctx.replay(approval_token=replay_approval)
                     await ctx.__aexit__(None, None, None)
                     return {
                         "success": True,
@@ -218,9 +261,23 @@ class TERXServer:
                     "cache_hit": False,
                     "recording": True,
                     "variables": sorted((variables or {}).keys()),
+                    "scope_id_set": True,
+                    "workflow_version": workflow_version,
+                    "side_effect": side_effect,
                     "mutation_guard": mutation_guard,
                     "mutation_threshold": mutation_threshold,
                     "note": "Run the browser actions, then call browser_task_finish(success=true).",
+                }
+            except ReplayRefused as exc:
+                await ctx.__aexit__(type(exc), exc, exc.__traceback__)
+                return {
+                    "success": False,
+                    "task": task,
+                    "cache_hit": True,
+                    "replayed": False,
+                    "refused": True,
+                    "error": str(exc),
+                    "report": ctx.report.as_dict() if ctx.report else None,
                 }
             except Exception as exc:
                 await ctx.__aexit__(type(exc), exc, exc.__traceback__)
@@ -243,7 +300,7 @@ class TERXServer:
                 await ctx.__aexit__(None, None, None)
                 return {
                     "success": True,
-                    "cached": recorded > 0,
+                    "cached": bool(ctx.report and ctx.report.status == "miss" and recorded > 0),
                     "commands_recorded": recorded,
                     "ledger": str(ctx.ledger) if ctx.ledger else None,
                     "report": ctx.report.as_dict() if ctx.report else None,
@@ -330,7 +387,9 @@ class TERXServer:
             # Resolve the element and click it through the node handle. Recording
             # DOM.resolveNode lets TERX remap fresh backendNodeIds on replay.
             try:
-                resolve_result = await bridge.send("DOM.resolveNode", {"backendNodeId": el.backend_dom_id})
+                resolve_result = await bridge.send(
+                    "DOM.resolveNode", {"backendNodeId": el.backend_dom_id}
+                )
             except Exception as exc:
                 return {"success": False, "error": f"Cannot resolve element: {exc}"}
 
@@ -493,9 +552,7 @@ class TERXServer:
                 )
                 import json
 
-                vp = json.loads(
-                    vp_result.get("result", {}).get("value", '{"w":1280,"h":720}')
-                )
+                vp = json.loads(vp_result.get("result", {}).get("value", '{"w":1280,"h":720}'))
                 center_x = vp["w"] / 2
                 center_y = vp["h"] / 2
             except Exception:
@@ -535,7 +592,7 @@ class TERXServer:
                 "cached_sequences": stats["total_sequences"],
                 "total_cache_hits": stats["total_hits"],
                 "unique_domains": stats["domains"],
-                "note": "Each cache hit = zero LLM calls for that action sequence.",
+                "note": "Hits are scoped semantic replays; inspect the report before treating them as completed.",
             }
 
         @self.mcp.tool()

@@ -16,9 +16,10 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from terx.cache.cache import MemoryCache, session_for
+from terx.cache.cache import ApprovalDecision, MemoryCache, session_for
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
+from terx.integrations.workflow import TerxWorkflow
 
 
 HTML = """<!doctype html>
@@ -142,6 +143,7 @@ async def run_suite() -> dict[str, Any]:
                     cold_variables={"email": "cold@example.com", "password": "cold-secret"},
                     warm_variables={"email": "warm@example.com", "password": "warm-secret"},
                     postcondition={"text_contains": "Welcome"},
+                    side_effect="mutating",
                     runner=_fill_login,
                 ),
                 await _run_case(
@@ -152,6 +154,7 @@ async def run_suite() -> dict[str, Any]:
                     cold_variables={"query": "contracts"},
                     warm_variables={"query": "invoices"},
                     postcondition={"text_contains": "Results for"},
+                    side_effect="read_only",
                     runner=_run_search,
                 ),
                 await _run_case(
@@ -162,8 +165,10 @@ async def run_suite() -> dict[str, Any]:
                     cold_variables={},
                     warm_variables={},
                     postcondition={"text_contains": "Invoice approved"},
+                    side_effect="destructive",
                     runner=_approve_invoice,
                 ),
+                await _run_workflow_adapter_case(cache, bridge, base_url),
             ]
     finally:
         chrome.terminate()
@@ -198,8 +203,10 @@ async def _run_case(
     cold_variables: dict[str, str],
     warm_variables: dict[str, str],
     postcondition: dict[str, str],
+    side_effect: str,
     runner: Callable[[Any, dict[str, str]], Awaitable[None]],
 ) -> EvalCaseResult:
+    approval_verifier = _local_approval_verifier() if side_effect == "destructive" else None
     await bridge.send("Page.navigate", {"url": base_url})
     await bridge.wait_for_load()
     cold_started = time.perf_counter()
@@ -208,7 +215,11 @@ async def _run_case(
         bridge,
         task,
         variables=cold_variables,
+        scope_id=f"local-eval:{task}",
+        precondition={"url_contains": base_url},
         postcondition=postcondition,
+        side_effect=side_effect,
+        approval_verifier=approval_verifier,
     ) as cold_ctx:
         if cold_ctx.hit:
             raise RuntimeError(f"Unexpected cache hit on cold run: {task}")
@@ -223,11 +234,17 @@ async def _run_case(
         bridge,
         task,
         variables=warm_variables,
+        scope_id=f"local-eval:{task}",
+        precondition={"url_contains": base_url},
         postcondition=postcondition,
+        side_effect=side_effect,
+        approval_verifier=approval_verifier,
     ) as warm_ctx:
         if not warm_ctx.hit:
             raise RuntimeError(f"Unexpected cache miss on warm run: {task}")
-        await warm_ctx.replay()
+        await warm_ctx.replay(
+            approval_token="local-eval-approved" if side_effect == "destructive" else None
+        )
     warm_ms = (time.perf_counter() - warm_started) * 1000
 
     warm_report = warm_ctx.report
@@ -245,6 +262,62 @@ async def _run_case(
     )
 
 
+async def _run_workflow_adapter_case(
+    cache: MemoryCache, bridge: Any, base_url: str
+) -> EvalCaseResult:
+    """Exercise the public dependency-free adapter against real Chrome."""
+    task = "login through TERX workflow adapter"
+    postcondition = {"text_contains": "Welcome"}
+
+    async def run_once(variables: dict[str, str]):
+        await bridge.send_internal("Page.navigate", {"url": base_url})
+        await bridge.wait_for_load()
+        workflow = TerxWorkflow(
+            cache=cache,
+            bridge=bridge,
+            task=task,
+            scope_id=f"local-eval:{task}",
+            variables=variables,
+            precondition={"url_contains": base_url},
+            postcondition=postcondition,
+        )
+
+        async def cold_path(browser):
+            await browser.type_into("textbox", "Email", "email")
+            await browser.type_into("textbox", "Password", "password")
+            await browser.click("button", "Login")
+            await browser.wait_for(postcondition)
+
+        started = time.perf_counter()
+        result = await workflow.run(cold_path)
+        return result, (time.perf_counter() - started) * 1000
+
+    cold_result, cold_ms = await run_once(
+        {"email": "adapter-cold@example.com", "password": "adapter-cold-secret"}
+    )
+    if cold_result.cache_hit:
+        raise RuntimeError("Unexpected workflow-adapter cache hit on cold run")
+
+    warm_result, warm_ms = await run_once(
+        {"email": "adapter-warm@example.com", "password": "adapter-warm-secret"}
+    )
+    if not warm_result.cache_hit:
+        raise RuntimeError("Unexpected workflow-adapter cache miss on warm run")
+
+    report = warm_result.report
+    return EvalCaseResult(
+        task=task,
+        cold_ms=round(cold_ms, 1),
+        warm_ms=round(warm_ms, 1),
+        cache_hit=warm_result.cache_hit,
+        cold_commands=cold_result.commands_recorded,
+        warm_commands=report.commands_replayed if report else 0,
+        variables_used=report.variables_used if report else [],
+        redacted_fields=cold_result.report.redacted_fields if cold_result.report else [],
+        postcondition=postcondition,
+    )
+
+
 async def _fill_login(bridge: Any, variables: dict[str, str]) -> None:
     await _focus_type(bridge, "Email", variables["email"])
     await _focus_type(bridge, "Password", variables["password"])
@@ -258,6 +331,21 @@ async def _run_search(bridge: Any, variables: dict[str, str]) -> None:
 
 async def _approve_invoice(bridge: Any, _: dict[str, str]) -> None:
     await _click(bridge, "Approve Invoice")
+
+
+def _local_approval_verifier():
+    """Test-only consume-once approval authority for the destructive eval."""
+    consumed: set[str] = set()
+
+    def verify_and_consume(request):
+        if request.token != "local-eval-approved":
+            return ApprovalDecision(False, False, "unknown local approval")
+        if request.token in consumed:
+            return ApprovalDecision(False, False, "local approval already consumed")
+        consumed.add(request.token)
+        return ApprovalDecision(True, True)
+
+    return verify_and_consume
 
 
 async def _focus_type(bridge: Any, label: str, text: str) -> None:

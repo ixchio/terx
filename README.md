@@ -1,85 +1,61 @@
-<div align="center">
+# TERX
 
-```
-████████╗███████╗██████╗ ██╗  ██╗
-╚══██╔══╝██╔════╝██╔══██╗╚██╗██╔╝
-   ██║   █████╗  ██████╔╝ ╚███╔╝
-   ██║   ██╔══╝  ██╔══██╗ ██╔██╗
-   ██║   ███████╗██║  ██║██╔╝ ██╗
-   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
-```
+**Local, policy-enforced replay for approved browser-agent workflows.**
 
-### Browser agent memory. Raw CDP. No Playwright dependency.
+TERX records a small, semantic workflow after a browser agent succeeds, then
+replays it through Chrome DevTools Protocol without another model call. It is
+for repeatable workflows whose starting state, caller scope, and successful
+outcome can be stated explicitly.
 
-[![CI](https://github.com/ixchio/terx/actions/workflows/tests.yml/badge.svg)](https://github.com/ixchio/terx/actions)
-[![PyPI](https://img.shields.io/pypi/v/terx?color=3ddc84&label=PyPI)](https://pypi.org/project/terx/)
-[![Downloads](https://img.shields.io/pypi/dm/terx?color=3ddc84)](https://pypi.org/project/terx/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
+It is not a general browser automation framework, an autonomous fallback
+agent, or a safe way to replay arbitrary JavaScript.
 
-</div>
+## When TERX earns its place
 
----
+Use TERX when an agent has already completed a browser workflow and you want
+the next run to be cheap, local, and constrained by evidence—not rediscovered
+by another model call. It is a fit for repeatable internal tasks such as
+logging into a known account, searching an operations dashboard, or filing an
+approved action behind a control-plane approval.
 
-## The Problem
+On a cache hit, TERX re-checks the caller scope and starting conditions,
+re-resolves every accessible target, executes only the semantic action set
+below, then verifies the intended outcome. If any check is ambiguous or
+false, it refuses instead of guessing.
 
-Your browser agent repeats expensive work — every single time.
+## v0.4: Trustworthy Replay
 
-- Logs into the same dashboards ↻
-- Rediscovers the same buttons ↻
-- Re-parses the same screens ↻
-- Burns model tokens on workflows it already solved ↻
+Every cacheable workflow must declare:
 
-**Run 100 tasks → pay for 100 LLM calls. TERX makes that 1.**
+- a `scope_id` that binds it to a tenant, account, environment, or fixture;
+- a `precondition` checked before replay;
+- a `postcondition` checked after the first run and every replay;
+- a route, workflow version, TTL, and side-effect class.
 
----
+Conditions support `url_contains`, `title_contains`, `text_contains`, and
+`selector_exists`; every value must be a non-empty string. Their full values participate in a policy fingerprint but
+are not written to the cache. Change any part of a workflow contract and bump
+`workflow_version` to intentionally create a new replay entry.
 
-## What TERX Does
+TERX persists only three semantic actions:
 
-TERX is a **replay memory layer** for browser agents.
+- `TERX.navigate` — an `http` or `https` origin-and-path navigation (no query,
+  fragment, or embedded credential);
+- `TERX.click` — an exact accessible role and label;
+- `TERX.type` — an exact labelled input and a named value placeholder.
 
-**Run 1:** your agent figures out the path. TERX silently records the exact Chrome DevTools Protocol (CDP) command sequence into a local SQLite cache.
+Raw CDP commands, coordinate clicks, key events, and arbitrary JavaScript still
+run on the cold path but make the workflow non-cacheable. Ambiguous targets,
+failed conditions, missing variables, expiry, and unapproved destructive work
+produce a structured refusal; TERX does not silently invoke an LLM.
 
-**Run 2 onward:** TERX replays the cached CDP commands directly — no LLM call, no screenshot parsing, no reasoning loop.
+## Why it stays lightweight
 
-```
-Run 1:  agent runs normally              3.05s · 1,985 tokens · $0.0065
-         TERX silently records CDP commands
-
-Run 2:  TERX replays                     0.090s · 0 tokens · $0.0000
-Run 50: TERX replays                     ~0.09s · 0 tokens · $0.0000
-```
-
-<div align="center">
-  <img src="https://raw.githubusercontent.com/ixchio/terx/main/docs/assets/terx-demo.gif" alt="TERX local replay demo" width="100%">
-</div>
-
----
-
-## Benchmark Numbers
-
-> Real measurement. Real LLM (`openai/gpt-oss-120b` via Groq). Token counts from API response headers.
-
-| Task | Agent (cold) | TERX (warm) | Speedup | Tokens saved |
-|:-----|:------------:|:-----------:|:-------:|:------------:|
-| User Login | 3.05s · $0.0065 | **0.090s · $0** | **34×** | 1,985 → 0 |
-| Search + Filter | 17.82s · $0.0108 | **0.099s · $0** | **179×** | 2,634 → 0 |
-| Multi-step Signup | 41.05s · $0.0142 | **0.103s · $0** | **399×** | 4,339 → 0 |
-| Data Table | 11.27s · $0.0093 | **0.088s · $0** | **128×** | 1,756 → 0 |
-| **Average** | **160.93s · $0.0925** | **0.926s · $0** | **174×** | **23,782 → 0** |
-
-Cache hit rate: **10/10** · Reproduce: `GROQ_API_KEY=... python -m terx.benchmarks.real_agent`
-
-No API key? Run the local eval:
-
-```bash
-terx demo         # cold record → warm replay, variables, redaction, postconditions
-terx eval-local   # deterministic headless Chrome suite — verifiable without a key
-```
-
-Full methodology → [docs/benchmarks.md](https://github.com/ixchio/terx/blob/main/docs/benchmarks.md)
-
----
+TERX reuses the Chrome CDP connection your application already owns. Its core
+runtime is an async CDP bridge, an accessibility-tree snapshot, and local
+SQLite—no Playwright or Selenium runtime, browser fleet, background service,
+or cloud account. The workflow adapter holds an accessibility snapshot only
+while a cold path is running and discards it before the next workflow.
 
 ## Install
 
@@ -87,218 +63,206 @@ Full methodology → [docs/benchmarks.md](https://github.com/ixchio/terx/blob/ma
 pip install terx
 ```
 
----
-
-## Quickstart
-
-### Option 1 — MCP Server (Claude Desktop, Cursor, Windsurf)
+TERX needs a local Chrome or Chromium instance with remote debugging enabled:
 
 ```bash
-# 1. Open Chrome with remote debugging
-google-chrome --remote-debugging-port=9222 --no-first-run
-
-# 2. Start the TERX MCP server
-terx-server
+google-chrome --remote-debugging-port=9222 --no-first-run \
+  --user-data-dir=/tmp/terx-chrome
 ```
 
-Add to your `mcp.json`:
-```json
-{ "mcpServers": { "terx": { "command": "terx-server" } } }
-```
-
-Wrap repeatable workflows with task markers — TERX records on first run and replays on every subsequent match:
-
-```text
-browser_task_start("login to dashboard")
-  ...normal browser tools...
-browser_task_finish(success=true)
-```
-
-Each response includes a structured **replay report**: commands replayed, variables used, redacted fields, postcondition metadata, and mutation guard stats.
-
----
-
-### Option 2 — Python Library
-
-Wrap your existing agent with two lines of context management:
+## Python quickstart
 
 ```python
-from terx.cdp.session import BrowserSession
 from terx.cache.cache import MemoryCache, session_for
+from terx.cdp.session import BrowserSession
 
 cache = MemoryCache()
 
 async with BrowserSession() as session:
     bridge = session.bridge()
-    variables = {"email": "user@example.com", "password": "..."}
-
     async with session_for(
         cache,
         bridge,
-        "login to salesforce",
-        variables=variables,
-        postcondition={"text_contains": "Welcome"},
-    ) as ctx:
-        if ctx.hit:
-            await ctx.replay()        # 0 tokens, ~80ms
+        "sign in to the billing dashboard",
+        scope_id="acme-prod:billing-service-account",
+        route_pattern="/login",
+        workflow_version=1,
+        side_effect="mutating",
+        variables={"email": "bot@acme.test", "password": "from-secret-store"},
+        precondition={"url_contains": "/login"},
+        postcondition={"text_contains": "Billing overview"},
+    ) as replay:
+        if replay.hit:
+            await replay.replay()
         else:
-            await your_agent.run()    # first run: agent runs, TERX records
+            # Drive bridge.send(...) from your agent here. Only labelled clicks
+            # and named-variable text entry become replayable actions.
+            await your_agent.run()
+
+    print(replay.report.as_dict())
 ```
 
-Variable interpolation — typed values matching `variables` are stored as `{{email}}`, `{{password}}`, etc.  
-Sensitive fields (password / token / API key inputs) are **redacted by default**.
-
-```bash
-TERX_REDACT_ALL_TEXT=1          # force all typed values through placeholders
-TERX_REDACT_FIELDS=tenant,ws    # add custom sensitive labels
-```
-
----
-
-### Option 3 — Browser Use Adapter
-
-Drop TERX into any Browser Use-style agent without changing your agent code:
+For a destructive workflow, require a host approval verifier that atomically
+checks and consumes a fresh approval for this exact replay identity:
 
 ```python
-from terx.integrations.browser_use import wrap_browser_use
+from terx import ApprovalDecision
 
-agent = BrowserUseAgent(...)
-agent = wrap_browser_use(
-    agent,
+async def verify_and_consume(request):
+    verdict = await control_plane.consume_browser_approval(
+        token=request.token,
+        scope_hash=request.scope_hash,
+        task=request.task_description,
+        workflow_version=request.workflow_version,
+        policy_fingerprint=request.policy_fingerprint,
+        structural_hash=request.structural_hash,
+        command_digest=request.command_digest,
+    )
+    return ApprovalDecision(verdict.approved, verdict.consumed, verdict.reason)
+
+# Pass approval_verifier=verify_and_consume when creating session_for(...).
+await replay.replay(approval_token=approval_from_your_control_plane)
+```
+
+Without both a token and a verifier result with `approved=True` and
+`consumed=True`, TERX refuses before running any replay action. The standalone
+`terx-server` has no verifier by default and therefore fails closed for
+destructive cache hits.
+
+`ReplayReport.status` is one of `miss`, `hit`, `refused`, or `failed`. Treat a
+refusal as a signal to run an approved cold-path agent flow or ask for input;
+do not assume TERX completed the task.
+
+## MCP
+
+```bash
+terx-server
+```
+
+```json
+{
+  "mcpServers": {
+    "terx": { "command": "terx-server" }
+  }
+}
+```
+
+Start a cacheable task with a complete contract, run normal `browser_*` tools
+on a miss, then finish it:
+
+```text
+browser_task_start(
+  task="sign in to billing",
+  scope_id="acme-prod:billing-service-account",
+  precondition={"url_contains": "/login"},
+  postcondition={"text_contains": "Billing overview"},
+  variables={"email": "bot@acme.test", "password": "..."}
+)
+browser_task_finish(success=true)
+```
+
+For `side_effect="destructive"`, `replay_approval` is only an opaque token.
+The application embedding `TERXServer` must configure a consume-once
+`approval_verifier`; the standalone server refuses destructive cache hits by
+default. The MCP server returns a refusal reason when it declines to act.
+
+Print the local configuration for a client; this command only writes to stdout
+and does not install a daemon or change client settings:
+
+```bash
+terx mcp-config --client cursor
+terx mcp-config --client codex
+```
+
+## Lightweight application adapter
+
+For code that already has a Chrome CDP bridge, use TERX's dependency-free
+workflow adapter. It adds no Playwright/Selenium runtime, browser process, or
+background worker. The cold path exposes only the three actions TERX can prove
+and replay:
+
+```python
+from terx.integrations.workflow import TerxWorkflow
+
+workflow = TerxWorkflow(
     cache=cache,
     bridge=bridge,
-    task="login to dashboard",
-    variables={"email": "...", "password": "..."},
-    postcondition={"text_contains": "Welcome"},
+    task="sign in to billing",
+    scope_id="acme-prod:billing-service-account",
+    variables={"email": "bot@acme.test", "password": "from-secret-store"},
+    precondition={"url_contains": "/login"},
+    postcondition={"text_contains": "Billing overview"},
 )
 
-result = await agent.run()  # TERX handles record/replay transparently
+async def sign_in(browser):
+    await browser.type_into("textbox", "Email", "email")
+    await browser.type_into("textbox", "Password", "password")
+    await browser.click("button", "Sign in")
+    await browser.wait_for({"text_contains": "Billing overview"})
+
+result = await workflow.run(sign_in)
 ```
 
----
+On a warm hit, `sign_in` is never called. Direct mutating bridge calls are
+intentionally excluded: use the adapter's semantic actions or TERX refuses to
+call it a replayable workflow. See [integration guidance](https://github.com/ixchio/terx/blob/main/docs/integrations.md).
 
-## How It Works
+## Security model
 
-Three components, each doing one job:
+- The cache is local SQLite under `.terx/`; protect that directory as
+  application data.
+- Named typed values are stored as `{{placeholders}}`; typed text without a
+  named variable is intentionally not cacheable.
+- Password, token, key, and similar named fields are redacted at cache and
+  audit boundaries. Cached response payloads are not retained.
+- Scope IDs are represented by a digest in the cache; scope is verified before
+  lookup and replay.
+- The experimental `SelfHealer` is disabled by default and is never called by
+  a replay. Enabling it can send the supplied diagnostic request to a LiteLLM
+  provider.
 
-**CDP Bridge** — raw `asyncio` WebSocket to Chrome. No Playwright subprocess, no Selenium, no ChromeDriver. Direct wire protocol. `<50ms` startup, `~2MB` RAM.
+See [SECURITY.md](https://github.com/ixchio/terx/blob/main/SECURITY.md) for the
+full boundary and reporting policy.
 
-**DOM Extractor** — reads Chrome's Accessibility Tree, not raw HTML. Assigns stable numeric IDs to interactive elements. Computes a fuzzy structural hash that survives CSS refactors and A/B tests without breaking cache hits.
+## Supported integration surface
 
-**Muscle Memory Cache** — SQLite. On task success: stores the CDP command sequence keyed by `(domain, dom_hash, task)`. On future runs: replays directly. Uses `INSERT OR IGNORE` — the first successful recording is canonical and never silently overwritten.
+Python, the dependency-free workflow adapter, and the built-in MCP server are
+supported in v0.4. The Browser Use adapter is experimental: it can only record
+agents that intentionally drive the TERX CDP bridge supplied to it. A normal
+Browser Use session is not a drop-in capture source.
 
-On replay, TERX re-snapshots the DOM and translates old `backendNodeId`s to current equivalents by matching `role + label` — so replays work even after Chrome restarts.
-
-**Replay safety checks:**
-- Optional postcondition validation — a replay that lands on the wrong page is rejected
-- `MutationObserver` guard — tracks DOM churn during replay and aborts on abnormal mutation drift
-- Self-healing LLM fallback — if DOM structure has drifted too far, falls back to the agent automatically
-
----
-
-## CLI
+## Verification
 
 ```bash
-terx doctor                          # diagnose connection + cache health
-terx stats                           # cache size, hit rate, task inventory
-terx inspect --domain app.example.com   # inspect cached sequences for a domain
-terx purge app.example.com           # invalidate domain cache
-terx demo                            # live record → replay demo (local Chrome)
-terx eval-local                      # full deterministic eval suite
+pytest tests/ -v
+ruff check .
+terx eval-local
 ```
 
----
+`terx eval-local` launches a temporary local page and headless Chrome to verify
+cold recording and warm semantic replay. It does not establish compatibility
+with arbitrary production websites.
 
-## TERX vs. Playwright
+## What TERX is not
 
-Playwright is a browser automation framework. TERX is a **memory layer** for agents that already know how to drive Chrome.
+TERX does not replace Playwright, Stagehand, Browser Use, or hosted browser
+automation platforms. Those products provide broader automation, browser fleet,
+observability, anti-bot, and agent capabilities. TERX's focused value is a
+local replay gate: reuse a known-good, explicitly approved workflow only when
+its scope and evidence still match.
 
-|  | Playwright | TERX |
-|:--|:--:|:--:|
-| Memory across runs | ✗ | ✓ |
-| Raw CDP (no subprocess) | ✗ | ✓ |
-| RAM per instance | ~120MB | ~2MB |
-| Works with any agent | ✗ | ✓ |
-| MCP server built-in | ✗ | ✓ |
-| Token cost on repeat tasks | Full price | **$0** |
-
----
-
-## MCP Tools Reference
-
-| Tool | Description |
-|:-----|:------------|
-| `browser_task_start` | Begin a recordable task session |
-| `browser_task_finish` | End session and commit to cache |
-| `browser_get_state` | Snapshot current DOM / AX tree |
-| `browser_navigate` | Navigate to URL (validates scheme) |
-| `browser_click` | Click by element label |
-| `browser_click_at` | Click by coordinates |
-| `browser_type` | Type text (auto-redacts sensitive fields) |
-| `browser_screenshot` | Capture screenshot → returns hash ref, not base64 |
-| `browser_screenshot_get` | Retrieve screenshot by hash ref |
-| `browser_scroll` | Scroll the page |
-| `browser_new_tab` | Open a new tab |
-| `cache_stats` | Cache inventory for current domain |
-| `cache_invalidate` | Invalidate cached sequences |
-
-**Security notes:**
-- Screenshots return hash refs — no context window poisoning with base64 blobs
-- Navigation validates URL schemes — blocks `javascript:` `data:` `file:` injections
-- Task wrappers accept `variables` + `postcondition` for safe parametric replay
-- Every replay returns a structured `report` object for audit
-
----
-
-## Roadmap
-
-- [x] Raw CDP bridge
-- [x] AX tree extractor + stable element IDs
-- [x] Fuzzy structural hasher
-- [x] Muscle memory cache (SQLite, `INSERT OR IGNORE`)
-- [x] Schema versioning + migrations
-- [x] MCP server (13 tools)
-- [x] Self-healing replay (LLM fallback on DOM drift)
-- [x] Real LLM benchmark suite (`terx-bench-real`)
-- [x] Parametric replay — `{{variable}}` interpolation
-- [x] Secret redaction for password / token / API-key fields
-- [x] Replay postconditions
-- [x] Browser Use-style adapter
-- [x] MutationObserver replay drift guard
-- [x] CLI doctor / stats / inspect / purge
-- [x] Local Chrome eval suite (`terx eval-local`)
-- [ ] Persistent cache across machines (optional remote backend)
-- [ ] Stagehand adapter
-- [ ] Playwright bridge compatibility layer
-
----
-
-## Dev
+## Development
 
 ```bash
-git clone https://github.com/ixchio/terx && cd terx
+git clone https://github.com/ixchio/terx.git
+cd terx
 pip install -e ".[dev]"
 pytest tests/ -v
-terx demo                              # local Chrome demo with variables + redaction
-terx eval-local                        # deterministic local browser replay eval suite
-python -m terx.benchmarks.baseline     # modeled baseline (no API key needed)
-GROQ_API_KEY=... python -m terx.benchmarks.real_agent   # real LLM run
+ruff format --check .
+ruff check .
+python -m terx.evals.local_suite
 ```
 
-Contributions welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first.
-
----
-
-## Docs
-
-[ixchio.github.io/terx](https://ixchio.github.io/terx) · [Quick Start](https://github.com/ixchio/terx/blob/main/docs/quickstart.md) · [Benchmarks](https://github.com/ixchio/terx/blob/main/docs/benchmarks.md) · [Architecture](https://github.com/ixchio/terx/blob/main/docs/development.md) · [Project Structure](https://github.com/ixchio/terx/blob/main/docs/project-structure.md) · [Changelog](https://github.com/ixchio/terx/blob/main/docs/changelog.md)
-
----
-
-<div align="center">
-
-**Built by [ixchio](https://github.com/ixchio) · MIT License**
-
-*If TERX saves you tokens, consider starring the repo ⭐*
-
-</div>
+See the [quickstart](https://github.com/ixchio/terx/blob/main/docs/quickstart.md),
+[development guide](https://github.com/ixchio/terx/blob/main/docs/development.md),
+and [changelog](https://github.com/ixchio/terx/blob/main/docs/changelog.md).

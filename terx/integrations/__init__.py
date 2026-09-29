@@ -1,5 +1,21 @@
-"""Optional integrations for third-party browser agent frameworks."""
+"""Optional integration surfaces.
 
-from terx.integrations.browser_use import BrowserUseRunResult, TerxBrowserUseAdapter, wrap_browser_use
+Nothing here starts a browser, worker, or background service at import time.
+Import only the adapter the host application needs.
+"""
 
-__all__ = ["BrowserUseRunResult", "TerxBrowserUseAdapter", "wrap_browser_use"]
+from terx.integrations.browser_use import (
+    BrowserUseRunResult,
+    TerxBrowserUseAdapter,
+    wrap_browser_use,
+)
+from terx.integrations.workflow import TerxActions, TerxWorkflow, WorkflowRunResult
+
+__all__ = [
+    "BrowserUseRunResult",
+    "TerxActions",
+    "TerxBrowserUseAdapter",
+    "TerxWorkflow",
+    "WorkflowRunResult",
+    "wrap_browser_use",
+]

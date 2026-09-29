@@ -50,22 +50,24 @@ terx eval-local     # deterministic local eval suite
 
 ```bash
 # Formatting
-black terx/ tests/
-isort terx/ tests/
+ruff format terx/ tests/
+ruff check terx/ tests/
 ```
 
 ---
 
-## Benchmark Sensitivity
+## Replay-Safety Sensitivity
 
-If your change touches the CDP bridge, cache, or DOM extractor — run the benchmark suite:
+If your change touches the CDP bridge, cache, DOM extractor, or policy layer,
+run the local semantic replay suite:
 
 ```bash
-python -m terx.benchmarks.baseline
-GROQ_API_KEY=... python -m terx.benchmarks.real_agent   # optional, needs key
+terx eval-local
 ```
 
-Include before/after numbers in your PR description.
+The v0.3 raw-CDP benchmark runners are retired and must not be used as v0.4
+performance claims. A new benchmark needs the methodology described in
+`docs/benchmarks.md`.
 
 ---
 

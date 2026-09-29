@@ -139,6 +139,8 @@ async def run_demo() -> None:
                     bridge,
                     "login to demo dashboard",
                     variables=variables,
+                    scope_id="terx-demo:local",
+                    precondition={"url_contains": url},
                     postcondition={"text_contains": "Welcome"},
                 ) as ctx:
                     if ctx.hit:

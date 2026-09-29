@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "terx"
-version = "0.3.2"
-description = "Memory layer for browser agents — replay repeated workflows with zero LLM tokens."
+version = "0.4.0"
+description = "Local policy-enforced replay for approved browser-agent workflows."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [{ name = "ixchio" }]
 keywords = [
     "browser-agent", "cdp", "chrome-devtools-protocol",
     "mcp", "model-context-protocol", "browser-automation",
-    "agent-memory", "semantic-cache", "browser-use",
+    "agent-memory", "semantic-cache", "browser-replay", "workflow-policy",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -55,17 +55,11 @@ dev = [
     "ruff>=0.4",
     "python-dotenv>=1.0",
 ]
-benchmark = [
-    "groq>=0.9",
-    "python-dotenv>=1.0",
-]
-all = ["terx[embeddings,vision,healing,browser-use,dev,benchmark]"]
+all = ["terx[embeddings,vision,healing,browser-use,dev]"]
 
 [project.scripts]
 terx           = "terx.cli:main"
 terx-server    = "terx.server.mcp:main"
-terx-bench     = "terx.benchmarks.baseline:main"
-terx-bench-real = "terx.benchmarks.real_agent:main"
 terx-demo      = "terx.demo:main"
 terx-eval-local = "terx.evals.local_suite:main"
 

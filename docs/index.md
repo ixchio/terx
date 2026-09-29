@@ -1,65 +1,36 @@
-# TERX Documentation
+# TERX documentation
 
-TERX is a memory layer for browser agents. Run a task once — TERX records the exact Chrome DevTools Protocol sequence. Every subsequent identical run replays in milliseconds with zero LLM calls.
+TERX is a local, policy-enforced replay gate for repeatable browser-agent
+workflows. It reuses only workflows whose caller scope, starting conditions,
+semantic targets, and outcome proof match the current run.
 
----
-
-## Docs
+## Guides
 
 | Guide | Description |
-|:---|:---|
-| [Quick Start](quickstart.md) | Get running in 5 minutes |
-| [Benchmarks](benchmarks.md) | Real measured numbers — 173.9x speedup, 100% token savings |
-| [Architecture](development.md) | How TERX works internally |
-| [Project Structure](project-structure.md) | Repository layout and artifact policy |
-| [Stagehand](stagehand.md) | Practical Stagehand integration path |
+| --- | --- |
+| [Quick start](quickstart.md) | Python and MCP replay contracts |
+| [Integrations](integrations.md) | Lightweight MCP and Python workflow adapter |
+| [Developer guide](development.md) | Semantic IR, policy boundary, and tests |
+| [Benchmarks](benchmarks.md) | Historical benchmark methodology and limits |
+| [Project structure](project-structure.md) | Repository layout |
+| [Stagehand](stagehand.md) | Experimental integration notes |
 | [Changelog](changelog.md) | Version history |
 
----
+## v0.4 boundary
 
-## At a glance
+TERX stores only labelled navigation, click, and named-variable text actions.
+It refuses raw JavaScript, coordinate input, ambiguous targets, failed
+conditions, wrong scope, and destructive hits without per-run approval. See the
+[quick start](quickstart.md) for the supported contract and
+[SECURITY.md](../SECURITY.md) for data and egress boundaries.
 
-```
-Run 1:  LLM agent discovers the path   →  $0.0065 · 1,985 tokens · 3.05s
-         TERX silently records CDP commands
-
-Run 2:  TERX replays                   →  $0.0000 · 0 tokens · 0.090s
-Run 3+: Same
-```
-
-**Numbers from a real measured run** against `openai/gpt-oss-120b` via Groq API. [See full benchmark →](benchmarks.md)
-
----
-
-## Install
+## Verify
 
 ```bash
-pip install terx
-```
-
-Start Chrome:
-
-```bash
-google-chrome --remote-debugging-port=9222 --no-first-run
-```
-
-Run the MCP server (works with Claude Desktop, Cursor, Windsurf):
-
-```bash
-terx-server
-```
-
-Run local proof demos:
-
-```bash
-terx demo
+pytest tests/ -v
+ruff check .
 terx eval-local
 ```
 
----
-
-## Repository
-
-- **Source**: [github.com/ixchio/terx](https://github.com/ixchio/terx)
-- **Issues**: [github.com/ixchio/terx/issues](https://github.com/ixchio/terx/issues)
-- **License**: MIT
+The local eval verifies TERX's supported headless-Chrome path; it does not
+claim universal site or agent compatibility.

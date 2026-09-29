@@ -4,6 +4,43 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
+## [0.4.0] - 2026-09-29
+
+### Changed
+
+- Added the dependency-free `TerxWorkflow` adapter and copy-paste MCP client
+  config generator. Neither launches a browser, starts a background worker, or
+  adds a framework dependency.
+- Reject empty condition values instead of treating them as verified checks.
+- Replaced raw-CDP cache persistence with a small semantic replay IR:
+  `TERX.navigate`, `TERX.click`, and `TERX.type`.
+- Made replay policy-bound: cacheable workflows now need `scope_id`, non-empty
+  precondition and postcondition dictionaries, route identity, version, and TTL.
+- Added structured replay decisions (`hit`, `miss`, `refused`, `failed`) to
+  reports and MCP results.
+- Marked the Browser Use adapter experimental. It captures only agents that
+  intentionally drive the supplied TERX CDP bridge.
+
+### Security
+
+- Stopped persisting raw CDP parameters and result payloads to SQLite or audit
+  JSONL; typed replay values must be named variables and are stored as placeholders.
+- Bound lookup to origin, route pattern, scope digest, and workflow version.
+- Replaced token-only destructive approval with a host-supplied, consume-once
+  approval verifier bound to the task, scope digest, workflow version, and
+  policy fingerprint, selected DOM structural hash, and semantic command
+  digest.
+- Removed automatic LLM self-healing from replay. The diagnostic helper is now
+  explicit opt-in (`TERX_ENABLE_EXPERIMENTAL_HEALING=1`).
+- Refuse ambiguous targets, failed preconditions, unsupported actions, and
+  uncacheable typed text instead of guessing or falling back.
+
+### Verification
+
+- Added negative tests for scope mismatch, precondition failure, destructive
+  approval, ambiguous targets, and raw-script/secret persistence.
+- Added the real local Chrome replay eval to CI.
+
 ## [0.3.0] - 2026-06-24
 
 ### Fixed

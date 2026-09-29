@@ -33,8 +33,11 @@ def _sanitize_dom_for_llm(elements: list) -> list[dict]:
 
 class SelfHealer:
     """
-    LLM-powered self-healing fallback for broken CDP replays.
-    Uses litellm to reason about the DOM changes and propose new CDP parameters.
+    Experimental opt-in LLM helper for manual diagnostics.
+
+    It is not invoked by TERX replay. Calling it can send the supplied task and
+    sanitized DOM to the configured LiteLLM provider, so it is disabled unless
+    TERX_ENABLE_EXPERIMENTAL_HEALING is explicitly set.
     """
 
     def __init__(self, model_name: str = "gpt-4o"):
@@ -47,6 +50,14 @@ class SelfHealer:
         Takes the failed command and the current DOM state,
         and asks the LLM to fix the parameters (e.g., providing a new backendNodeId).
         """
+        if os.environ.get("TERX_ENABLE_EXPERIMENTAL_HEALING", "").lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            logger.warning("Experimental self-healing is disabled by default.")
+            return None
         if not HAS_LITELLM:
             logger.warning("litellm is not installed. Self-healing is disabled.")
             return None

@@ -34,7 +34,9 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Check local TERX and Chrome/CDP readiness")
     doctor.add_argument("--host", default="localhost", help="Chrome DevTools host")
     doctor.add_argument("--port", type=int, default=9222, help="Chrome DevTools port")
-    doctor.add_argument("--strict", action="store_true", help="Exit non-zero when Chrome/CDP is absent")
+    doctor.add_argument(
+        "--strict", action="store_true", help="Exit non-zero when Chrome/CDP is absent"
+    )
     doctor.set_defaults(func=_cmd_doctor)
 
     stats = sub.add_parser("stats", help="Print cache statistics as JSON")
@@ -54,6 +56,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     eval_local = sub.add_parser("eval-local", help="Run the local browser replay eval suite")
     eval_local.set_defaults(func=_cmd_eval_local)
+
+    mcp_config = sub.add_parser(
+        "mcp-config", help="Print a copy-paste MCP configuration; never writes client files"
+    )
+    mcp_config.add_argument(
+        "--client",
+        choices=("generic", "claude-desktop", "cursor", "windsurf", "codex"),
+        default="generic",
+        help="Target client format (default: generic JSON)",
+    )
+    mcp_config.set_defaults(func=_cmd_mcp_config)
 
     return parser
 
@@ -83,6 +96,9 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
+    # Open through the cache first so pre-v0.4 databases are migrated before
+    # the read-only inspector requests the v3 evidence columns.
+    MemoryCache(db_path=args.db)._ensure_db()
     rows = _inspect_cache(Path(args.db), domain=args.domain, limit=max(args.limit, 1))
     print(json.dumps({"sequences": rows, "count": len(rows)}, indent=2, sort_keys=True))
     return 0
@@ -109,6 +125,23 @@ def _cmd_eval_local(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp_config(args: argparse.Namespace) -> int:
+    """Print static stdio config so setup needs no resident helper."""
+    if args.client == "codex":
+        print("[mcp_servers.terx]")
+        print('command = "terx-server"')
+        return 0
+
+    print(
+        json.dumps(
+            {"mcpServers": {"terx": {"command": "terx-server"}}},
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _chrome_binary() -> str | None:
     for name in ("google-chrome", "chromium", "chromium-browser"):
         binary = shutil.which(name)
@@ -132,7 +165,9 @@ def _probe_cdp(host: str, port: int) -> dict[str, Any]:
         return {"reachable": False, "url": url, "error": str(exc)}
 
 
-def _inspect_cache(db_path: Path, domain: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+def _inspect_cache(
+    db_path: Path, domain: str | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
 
@@ -140,7 +175,8 @@ def _inspect_cache(db_path: Path, domain: str | None = None, limit: int = 20) ->
     try:
         query = (
             "SELECT id, domain, structural_hash, task_key, task_description, "
-            "commands_json, hit_count, created_at, last_used FROM sequences"
+            "commands_json, hit_count, created_at, last_used, origin, route_pattern, "
+            "scope_hash, workflow_version, policy_json, expires_at FROM sequences"
         )
         params: list[Any] = []
         if domain:
@@ -164,6 +200,12 @@ def _inspect_cache(db_path: Path, domain: str | None = None, limit: int = 20) ->
                     "hit_count": row[6],
                     "created_at": row[7],
                     "last_used": row[8],
+                    "origin": row[9],
+                    "route_pattern": row[10],
+                    "scope_digest": row[11],
+                    "workflow_version": row[12],
+                    "policy": json.loads(row[13]),
+                    "expires_at": row[14],
                 }
             )
         return rows

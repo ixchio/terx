@@ -7,12 +7,12 @@ so the repository stays easy to audit.
 terx/
   cdp/             Raw Chrome DevTools Protocol bridge and browser sessions
   dom/             Accessibility-tree extraction and structural hashing
-  cache/           Recording, replay, redaction, reports, and drift guards
+  cache/           Semantic recording, scoped replay, redaction, and reports
   server/          MCP server and browser tools
-  agent/           Optional self-healing helpers
-  integrations/    Third-party adapter surfaces
+  agent/           Experimental opt-in diagnostics helpers (not replay)
+  integrations/    Optional adapters; workflow.py is dependency-free
   evals/           Deterministic local eval suites
-  benchmarks/      Baseline and real LLM benchmark runners
+  benchmarks/      Archived v0.3 benchmark source (not a v0.4 release tool)
   vision/          Optional visual audit helpers
 
 examples/          Small integration examples

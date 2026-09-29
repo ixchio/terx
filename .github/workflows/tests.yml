@@ -36,3 +36,7 @@ jobs:
     - name: Run tests with pytest
       run: |
         pytest tests/ -v
+
+    - name: Run real Chrome replay eval
+      run: |
+        python -m terx.evals.local_suite

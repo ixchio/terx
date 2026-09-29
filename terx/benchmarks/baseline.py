@@ -565,7 +565,9 @@ async def run_benchmarks():
 
 
 def main():
-    asyncio.run(run_benchmarks())
+    raise SystemExit(
+        "The v0.3 raw-CDP benchmark is retired. See docs/benchmarks.md before creating a v0.4 benchmark."
+    )
 
 
 if __name__ == "__main__":

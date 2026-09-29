@@ -1,199 +1,91 @@
-# TERX Developer Guide
+# TERX developer guide
 
-This document covers local development setup, architectural internals, code conventions, and testing protocols.
-
----
-
-## 🏗️ Architecture Blueprint
-
-TERX operates as a lightweight, modular middle-layer. Unlike heavy automation frameworks (e.g., Playwright) that spawn multi-layered browser runtimes, TERX communicates with Chrome directly via a single WebSocket per tab using the **Chrome DevTools Protocol (CDP)**.
-
-```
-                  ┌─────────────────────────────────┐
-                  │           AI Agent /            │
-                  │        MCP Client App           │
-                  └────────────────┬────────────────┘
-                                   │ (MCP Protocol)
-                                   ▼
-                  ┌─────────────────────────────────┐
-                  │         TERX MCP Server         │
-                  │         (FastMCP tools)         │
-                  └────────────────┬────────────────┘
-                                   │ (Direct method calls)
-                                   ▼
-                  ┌─────────────────────────────────┐
-                  │         BrowserSession          │
-                  │      (Tab Manager / Heartbeat)  │
-                  └──────┬───────────────────┬──────┘
-                         │                   │
-                         ▼                   ▼
-                ┌───────────────┐   ┌───────────────┐
-                │   CDPBridge   │   │   CDPBridge   │
-                │    (Tab 1)    │   │    (Tab 2)    │
-                └───────┬───────┘   └───────┬───────┘
-                        │ (JSON WebSocket)  │
-                        ▼                   ▼
-              ┌───────────────────────────────────────┐
-              │           Google Chrome               │
-              │  (Remote Debugging Port: 9222)        │
-              └───────────────────────────────────────┘
-```
-
----
-
-## 🛠️ Development Setup
-
-### 1. Prerequisites
-- **Python:** 3.11 or 3.12 (standard packages work).
-- **Chrome/Chromium:** Required for debugging.
-- **Dependencies:** `websockets`, `aiohttp`, `mcp`, `mmh3`. (Optional: `sentence-transformers` for semantic matching).
-
-### 2. Sandbox Setup
-Clone the repository and perform an editable, developmental installation:
+## Local setup
 
 ```bash
 git clone https://github.com/ixchio/terx.git
 cd terx
-
-# Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install all development dependencies in editable mode
-pip install -e ".[all]"
-```
-
-### 3. Launching Chrome with Debugging enabled
-Chrome must expose the debugger websocket interface. Make sure all Chrome windows are closed first, then launch:
-
-**Linux:**
-```bash
-google-chrome --remote-debugging-port=9222 --no-first-run --user-data-dir=~/.config/chrome-dev
-```
-
-**macOS:**
-```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --no-first-run --user-data-dir=/tmp/chrome-dev
-```
-
-**Windows (PowerShell):**
-```powershell
-Start-Process "chrome.exe" -ArgumentList "--remote-debugging-port=9222", "--no-first-run", "--user-data-dir=$env:TEMP\chrome-dev"
-```
-
-Verify connection by visiting `http://localhost:9222/json/list` in any browser.
-
----
-
-## 🔬 Core Systems Implementation
-
-### 1. Direct CDP Bridge (`terx.cdp.bridge`)
-The bridge does not use intermediate abstractions. It wraps a raw WebSocket connection.
-
-To bypass loop attachment exceptions (`RuntimeError: Event loop is closed` / `attached to a different loop`), the WebSocket listener executes as a background task spawned on the running loop (`asyncio.get_running_loop()`). Command sequences match incoming frames using incremental transaction IDs:
-
-```python
-cmd_id = next(self._id_counter)
-future = asyncio.get_running_loop().create_future()
-self._pending[cmd_id] = future
-
-# Sent as JSON frame
-await self._ws.send(json.dumps({"id": cmd_id, "method": method, "params": params}))
-```
-
-### 2. Fuzzy Structural Hasher (`terx.dom.extractor`)
-Instead of parsing raw HTML strings (which causes context bloat and token waste), the DOM Extractor retrieves Chrome's Accessibility Tree (AXTree).
-
-Fuzzy matching uses token-level **Levenshtein Distance** over the compiled role sequences. When the user requests a cached navigation target, the system matches the sequence against database records using this calculation:
-
-$$\text{Similarity} = 1.0 - \frac{\text{LevenshteinDistance}(S_{\text{active}}, S_{\text{cached}})}{\max(|S_{\text{active}}|, |S_{\text{cached}}|)}$$
-
-If the similarity is $\ge 0.85$, the cache yields a hit.
-
-### 3. Parametric Replay and Redaction
-
-`session_for(..., variables={...})` replaces matching typed values with stable
-placeholders before caching:
-
-```python
-await bridge.send("Input.insertText", {"text": "user@example.com"})
-# stored as {"text": "{{email}}"} when variables["email"] == "user@example.com"
-```
-
-Sensitive fields whose AX label includes terms such as `password`, `token`, or
-`api key` are redacted by default even when the caller forgot to pass variables.
-Replay then raises `MissingReplayVariable` until the required value is supplied.
-
-### 4. Replay Postconditions
-
-A cache replay can execute technically and still land on the wrong page. TERX
-therefore supports postconditions:
-
-```python
-postcondition={
-    "url_contains": "/dashboard",
-    "text_contains": "Welcome",
-    "selector_exists": "#account-menu",
-}
-```
-
-Failed postconditions raise `PostconditionFailed` and do not count as cache hits.
-
-### 5. Replay Reports
-
-Every recording context exposes `ctx.report`, a structured `ReplayReport` used
-by the Python API, MCP tools, Browser Use-style adapter, and CLI-facing demos.
-It includes cache hit state, command counts, variable placeholders, redacted
-fields, postcondition metadata, latency, run number, and mutation guard stats.
-
-### 6. Mutation Guard
-
-Warm replays can be suspicious even when individual CDP commands succeed. TERX
-therefore injects a temporary page-scoped `MutationObserver` before replay and
-reads the mutation count after the sequence. If the count exceeds the configured
-threshold, replay raises `MutationDriftError` instead of silently accepting a
-workflow that likely landed on a changed UI.
-
-```python
-async with session_for(
-    cache,
-    bridge,
-    "approve invoice",
-    mutation_guard=True,
-    mutation_threshold=20,
-) as ctx:
-    if ctx.hit:
-        await ctx.replay()
-```
-
-### 7. Operator CLI
-
-`terx` is the human/operator command surface:
-
-```bash
-terx doctor
-terx stats
-terx inspect --domain app.example.com
-terx purge app.example.com
-terx demo
-terx eval-local
-```
-
-`inspect` reads SQLite directly in read-only mode and summarizes cached
-sequences without printing recorded secret values.
-
----
-
-## 🧪 Testing Guidelines
-
-Verify modifications against unit tests before committing:
-
-```bash
-# Run basic tests
+pip install -e ".[dev]"
 pytest tests/ -v
-
-# Run performance benchmarks with pytest-benchmark
-pytest tests/ -v --benchmark-only
+ruff format --check .
+ruff check .
+python -m terx.evals.local_suite
 ```
 
-Write test cases inside the `tests/` folder. When verifying browser interactions, mock the `CDPBridge` or spin up a headless Chrome instance with temporary profile directories.
+The local eval launches its own temporary headless Chrome. For manual MCP work,
+start a dedicated Chrome profile with `--remote-debugging-port=9222`.
+
+## Replay architecture
+
+```text
+agent or MCP client
+        |
+        v
+RecordingContext + ReplayPolicy
+        |                    |
+ cold path CDP          scoped cache lookup
+        |                    |
+ semantic action IR <--- hit -> precondition -> replay -> postcondition
+        |                                      |
+ SQLite + redacted audit                         refusal or report
+```
+
+`RecordingContext` observes regular bridge commands only on a cold path and
+translates this narrow sequence into a persisted action IR:
+
+| Source CDP gesture | Persisted action |
+| --- | --- |
+| `Page.navigate` to query-free `http` or `https` | `TERX.navigate` |
+| `DOM.resolveNode` plus exact `this.click()` | `TERX.click` |
+| labelled `DOM.focus` plus `Input.insertText` | `TERX.type` |
+
+Any raw mouse/keyboard event, coordinate click, or arbitrary
+`Runtime.evaluate`/`Runtime.callFunctionOn` marks the cold run non-cacheable.
+It is important that a new feature preserves this fail-closed behavior instead
+of adding raw CDP serialization.
+
+## Replay policy
+
+`ReplayPolicy` requires a scope ID, precondition dictionary, postcondition
+dictionary, positive workflow version, and valid side-effect class. The scope
+digest, origin, route pattern, workflow version, and DOM similarity are all
+part of matching. The complete policy also has a fingerprint, so a caller
+cannot replay a workflow under altered conditions or a looser side-effect
+class. Only non-empty URL, title, text, and selector conditions are cacheable; arbitrary
+JavaScript conditions remain cold-path-only. A cache entry also has a TTL.
+
+Replay re-resolves each target from the live accessibility tree using exact
+role plus accessible name. Zero or multiple matches cause `ReplayRefused`.
+There is no automatic LLM fallback. A `destructive` replay requires a host
+`approval_verifier` to return an `ApprovalDecision` with both `approved` and
+`consumed` true for each hit. The verifier must atomically consume the opaque
+token and bind it to the request's task, scope hash, version, policy
+fingerprint, selected structural hash, and semantic command digest.
+
+## Data boundaries
+
+Keep variable values out of every persisted representation. `TERX.type` must
+contain a `{{placeholder}}`; cached result payloads are always empty. Both the
+SQLite cache and JSONL audit writer call the same storage sanitizer. Do not add
+a diagnostic log or an adapter that serializes raw params/results without a
+redaction review.
+
+The experimental `SelfHealer` is manual-only and opt-in. It must never be
+called from the normal replay path.
+
+## Test requirements
+
+Any cache or integration change needs unit coverage for the intended replay and
+the failure mode. At minimum, preserve coverage for:
+
+- scope mismatch and TTL miss;
+- failed precondition and failed postcondition;
+- destructive replay without an approval verifier, denied approval, and reused approval;
+- missing/ambiguous semantic target;
+- no plaintext typed value or raw JavaScript in cache/audit;
+- a headless Chrome cold-to-warm flow in `terx.evals.local_suite`.
+
+`pytest` and Ruff validate code shape. The local eval validates the supported
+browser path; neither proves compatibility with production sites.

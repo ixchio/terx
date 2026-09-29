@@ -666,7 +666,9 @@ def _generate_md(rows, total_agent_time, total_replay_time, avg_spd,
 
 
 def main():
-    asyncio.run(run())
+    raise SystemExit(
+        "The v0.3 raw-CDP benchmark is retired. See docs/benchmarks.md before creating a v0.4 benchmark."
+    )
 
 
 if __name__ == "__main__":
