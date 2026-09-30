@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from terx.cdp.bridge import CDPBridge
 from terx.dom.extractor import DOMExtractor, DOMSnapshot, hash_similarity
+from terx.tools import SavedTool, ToolManifestError
 
 logger = logging.getLogger(__name__)
 
@@ -256,21 +257,24 @@ class ReplayDecision:
 
 @dataclass
 class ReplayCostLedger:
-    """Tracks savings from a cache replay."""
+    """Records replay activity without guessing provider-side model savings."""
 
     task_description: str
     hit: bool
     commands_replayed: int
-    estimated_llm_calls_saved: int
     latency_ms: float
     run_number: int
+    # Kept as a nullable compatibility field. TERX cannot infer calls saved
+    # from browser actions; hosts must attach provider usage records instead.
+    estimated_llm_calls_saved: int | None = None
+    model_calls_during_replay: int = 0
 
     def __str__(self) -> str:
         if self.hit:
             return (
                 f"💾 Cache HIT · {self.commands_replayed} commands · "
                 f"{self.latency_ms:.0f}ms · "
-                f"~{self.estimated_llm_calls_saved} LLM calls saved · "
+                f"TERX model calls: {self.model_calls_during_replay} · "
                 f"run #{self.run_number}"
             )
         return f"🔍 Cache MISS · run #{self.run_number} (learning...)"
@@ -344,9 +348,9 @@ class MemoryCache:
     # Setup                                                                 #
     # ------------------------------------------------------------------ #
 
-    # Schema v3 introduces an explicit replay scope and expires legacy raw-CDP
-    # entries from normal replay eligibility.
-    SCHEMA_VERSION = 3
+    # Schema v4 adds data-only saved tool manifests. Their scope is stored only
+    # as a digest; every invocation supplies and verifies the raw scope again.
+    SCHEMA_VERSION = 4
 
     def _ensure_db(self) -> sqlite3.Connection:
         with self._db_lock:
@@ -375,6 +379,7 @@ class MemoryCache:
                 self._migrate_db(db, current_version)
 
             self._create_sequences_table(db)
+            self._create_tools_table(db)
             db.execute("CREATE INDEX IF NOT EXISTS idx_domain_task ON sequences(domain, task_key)")
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_scope_lookup "
@@ -414,6 +419,32 @@ class MemoryCache:
             """
         )
 
+    @staticmethod
+    def _create_tools_table(db: sqlite3.Connection) -> None:
+        """Create compact manifests for MCP-discoverable saved tools."""
+        db.execute(
+            """
+                CREATE TABLE IF NOT EXISTS saved_tools (
+                    name                 TEXT PRIMARY KEY,
+                    description          TEXT NOT NULL,
+                    task_description     TEXT NOT NULL,
+                    input_names_json     TEXT NOT NULL,
+                    scope_hash           TEXT NOT NULL,
+                    precondition_json    TEXT NOT NULL,
+                    postcondition_json   TEXT NOT NULL,
+                    route_pattern        TEXT,
+                    workflow_version     INTEGER NOT NULL,
+                    side_effect          TEXT NOT NULL,
+                    ttl_seconds          INTEGER,
+                    mutation_guard       INTEGER NOT NULL,
+                    mutation_threshold   INTEGER NOT NULL,
+                    result_spec_json     TEXT NOT NULL,
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL
+                )
+            """
+        )
+
     def _migrate_db(self, db: sqlite3.Connection, from_version: int) -> None:
         """Migrate database schema from from_version to SCHEMA_VERSION."""
         if from_version < 1:
@@ -448,6 +479,8 @@ class MemoryCache:
                 )
                 db.execute("DROP TABLE sequences")
                 db.execute("ALTER TABLE sequences_v3 RENAME TO sequences")
+        if from_version < 4:
+            self._create_tools_table(db)
         # schema_version historically used version as its primary key, so
         # INSERT OR REPLACE created multiple rows instead of replacing the
         # current value. Normalize it to exactly one authoritative version.
@@ -646,7 +679,129 @@ class MemoryCache:
             total = db.execute("SELECT COUNT(*) FROM sequences").fetchone()[0]
             hits = db.execute("SELECT SUM(hit_count) FROM sequences").fetchone()[0] or 0
             domains = db.execute("SELECT COUNT(DISTINCT domain) FROM sequences").fetchone()[0]
-            return {"total_sequences": total, "total_hits": hits, "domains": domains}
+            saved_tools = db.execute("SELECT COUNT(*) FROM saved_tools").fetchone()[0]
+            return {
+                "total_sequences": total,
+                "total_hits": hits,
+                "domains": domains,
+                "saved_tools": saved_tools,
+            }
+
+    def save_tool(self, tool: SavedTool, *, replace: bool = False) -> None:
+        """Persist a data-only tool contract without raw scope or input values."""
+        if not isinstance(tool, SavedTool):
+            raise TypeError("tool must be a SavedTool")
+        with self._db_lock:
+            db = self._ensure_db()
+            existing = db.execute(
+                "SELECT 1 FROM saved_tools WHERE name = ?", (tool.name,)
+            ).fetchone()
+            if existing and not replace:
+                raise ToolManifestError(
+                    f"saved tool {tool.name!r} already exists; pass replace=True to update it"
+                )
+            now = datetime.now(timezone.utc).isoformat()
+            values = (
+                tool.name,
+                tool.description.strip(),
+                tool.task.strip(),
+                json.dumps(list(tool.input_names), sort_keys=True),
+                tool.scope_hash,
+                json.dumps(tool.precondition, sort_keys=True),
+                json.dumps(tool.postcondition, sort_keys=True),
+                tool.route_pattern,
+                tool.workflow_version,
+                tool.side_effect,
+                tool.ttl_seconds,
+                int(tool.mutation_guard),
+                tool.mutation_threshold,
+                json.dumps(tool.result_spec, sort_keys=True),
+                now,
+                now,
+            )
+            db.execute(
+                """
+                INSERT INTO saved_tools (
+                    name, description, task_description, input_names_json, scope_hash,
+                    precondition_json, postcondition_json, route_pattern, workflow_version,
+                    side_effect, ttl_seconds, mutation_guard, mutation_threshold,
+                    result_spec_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    description = excluded.description,
+                    task_description = excluded.task_description,
+                    input_names_json = excluded.input_names_json,
+                    scope_hash = excluded.scope_hash,
+                    precondition_json = excluded.precondition_json,
+                    postcondition_json = excluded.postcondition_json,
+                    route_pattern = excluded.route_pattern,
+                    workflow_version = excluded.workflow_version,
+                    side_effect = excluded.side_effect,
+                    ttl_seconds = excluded.ttl_seconds,
+                    mutation_guard = excluded.mutation_guard,
+                    mutation_threshold = excluded.mutation_threshold,
+                    result_spec_json = excluded.result_spec_json,
+                    updated_at = excluded.updated_at
+                """,
+                values,
+            )
+            db.commit()
+
+    def get_tool(self, name: str) -> SavedTool | None:
+        """Return one saved tool manifest, or ``None`` when it does not exist."""
+        with self._db_lock:
+            db = self._ensure_db()
+            row = db.execute(
+                """
+                SELECT name, description, task_description, input_names_json, scope_hash,
+                       precondition_json, postcondition_json, route_pattern, workflow_version,
+                       side_effect, ttl_seconds, mutation_guard, mutation_threshold, result_spec_json
+                FROM saved_tools WHERE name = ?
+                """,
+                (name,),
+            ).fetchone()
+            return self._tool_from_row(row) if row is not None else None
+
+    def list_tools(self) -> list[SavedTool]:
+        """List saved tool manifests in stable name order."""
+        with self._db_lock:
+            db = self._ensure_db()
+            rows = db.execute(
+                """
+                SELECT name, description, task_description, input_names_json, scope_hash,
+                       precondition_json, postcondition_json, route_pattern, workflow_version,
+                       side_effect, ttl_seconds, mutation_guard, mutation_threshold, result_spec_json
+                FROM saved_tools ORDER BY name
+                """
+            ).fetchall()
+            return [self._tool_from_row(row) for row in rows]
+
+    def delete_tool(self, name: str) -> bool:
+        """Delete one manifest. Cached workflows remain available for inspection."""
+        with self._db_lock:
+            db = self._ensure_db()
+            deleted = db.execute("DELETE FROM saved_tools WHERE name = ?", (name,)).rowcount
+            db.commit()
+            return bool(deleted)
+
+    @staticmethod
+    def _tool_from_row(row: tuple[Any, ...]) -> SavedTool:
+        return SavedTool(
+            name=row[0],
+            description=row[1],
+            task=row[2],
+            input_names=tuple(json.loads(row[3])),
+            scope_hash=row[4],
+            precondition=json.loads(row[5]),
+            postcondition=json.loads(row[6]),
+            route_pattern=row[7],
+            workflow_version=row[8],
+            side_effect=row[9],
+            ttl_seconds=row[10],
+            mutation_guard=bool(row[11]),
+            mutation_threshold=row[12],
+            result_spec=json.loads(row[13]),
+        )
 
     # ------------------------------------------------------------------ #
     # TERX audit writer                                                     #
@@ -867,9 +1022,9 @@ class RecordingContext:
             task_description=self._task,
             hit=True,
             commands_replayed=len(self._cached_seq.commands),
-            estimated_llm_calls_saved=len(self._cached_seq.commands),
             latency_ms=latency,
             run_number=self._run_number,
+            model_calls_during_replay=0,
         )
         self.report = ReplayReport(
             task_description=self._task,
@@ -1136,7 +1291,6 @@ class RecordingContext:
                 task_description=self._task,
                 hit=False,
                 commands_replayed=0,
-                estimated_llm_calls_saved=0,
                 latency_ms=0,
                 run_number=self._run_number,
             )
@@ -1200,7 +1354,6 @@ class RecordingContext:
                 task_description=self._task,
                 hit=False,
                 commands_replayed=0,
-                estimated_llm_calls_saved=0,
                 latency_ms=0,
                 run_number=self._run_number,
             )

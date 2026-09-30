@@ -85,7 +85,8 @@ the failure mode. At minimum, preserve coverage for:
 - destructive replay without an approval verifier, denied approval, and reused approval;
 - missing/ambiguous semantic target;
 - no plaintext typed value or raw JavaScript in cache/audit;
-- a headless Chrome cold-to-warm flow in `terx.evals.local_suite`.
+- a headless Chrome cold-to-warm flow in `terx.evals.local_suite`;
+- saved-tool discovery and a fresh-result replay after browser reconnection.
 
 `pytest` and Ruff validate code shape. The local eval validates the supported
 browser path; neither proves compatibility with production sites.

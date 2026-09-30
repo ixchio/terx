@@ -14,11 +14,12 @@ from terx.cache.cache import (
     ReplayReport,
     session_for,
 )
+from terx.tools import SavedTool, ToolManifestError, ToolResultError
 
 # Backwards compatibility alias
 MuscleMemorycache = MemoryCache
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     "CDPBridge",
     "BrowserSession",
@@ -30,5 +31,8 @@ __all__ = [
     "ReplayApprovalRequest",
     "ReplayPolicy",
     "ReplayReport",
+    "SavedTool",
+    "ToolManifestError",
+    "ToolResultError",
     "session_for",
 ]

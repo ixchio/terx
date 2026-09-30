@@ -29,6 +29,7 @@ from terx.cache.cache import (
 )
 from terx.cdp.bridge import CDPBridge
 from terx.dom.extractor import AXElement, DOMExtractor, DOMSnapshot
+from terx.tools import call_result_reader
 
 T = TypeVar("T")
 _VARIABLE_NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
@@ -233,9 +234,27 @@ class TerxWorkflow:
         self,
         cold_path: Callable[[TerxActions], Awaitable[T] | T] | None,
         *,
+        variables: dict[str, Any] | None = None,
+        result_reader: Callable[[CDPBridge], Awaitable[Any] | Any] | None = None,
         approval_token: str | None = None,
     ) -> WorkflowRunResult:
-        """Run ``cold_path`` once or replay it when its policy matches."""
+        """Run ``cold_path`` once or replay it when its policy matches.
+
+        ``variables`` can replace values declared in the workflow constructor;
+        undeclared names are rejected so a replay contract cannot silently grow.
+        A ``result_reader`` runs after either a successful cold path or replay
+        and is never cached. It lets a caller read current structured page data
+        instead of receiving ``None`` on a warm hit.
+        """
+        run_variables = dict(self.variables)
+        if variables is not None:
+            unexpected = sorted(set(variables) - set(self.variables))
+            if unexpected:
+                raise ValueError(
+                    "TERX workflow variables must be declared at construction: "
+                    + ", ".join(unexpected)
+                )
+            run_variables.update(variables)
         value: Any = None
         cache_hit = False
         commands_recorded = 0
@@ -244,7 +263,7 @@ class TerxWorkflow:
             self.cache,
             self.bridge,
             self.task,
-            variables=self.variables,
+            variables=run_variables,
             scope_id=self.scope_id,
             route_pattern=self.route_pattern,
             workflow_version=self.workflow_version,
@@ -262,10 +281,12 @@ class TerxWorkflow:
             else:
                 if cold_path is None:
                     raise RuntimeError("TERX cache miss requires an explicit cold_path")
-                value = cold_path(TerxActions(self.bridge, context, self.variables))
+                value = cold_path(TerxActions(self.bridge, context, run_variables))
                 if inspect.isawaitable(value):
                     value = await value
                 commands_recorded = context.recorded_commands
+            if result_reader is not None:
+                value = await call_result_reader(result_reader, self.bridge)
 
         return WorkflowRunResult(
             value=value,

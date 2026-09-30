@@ -463,7 +463,7 @@ def test_v2_raw_entries_migrate_but_do_not_replay():
             is None
         )
         migrated = cache._ensure_db()
-        assert migrated.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+        assert migrated.execute("SELECT version FROM schema_version").fetchone()[0] == 4
         assert migrated.execute("SELECT expires_at FROM sequences").fetchone()[0] == 0
 
 
@@ -491,6 +491,74 @@ def test_cache_stats():
         assert stats["total_sequences"] == 2
         assert stats["total_hits"] == 1
         assert stats["domains"] == 2
+
+
+@pytest.mark.asyncio
+async def test_saved_tool_manifest_is_data_only_and_validates_live_result():
+    from terx.tools import SavedTool, ToolManifestError, extract_tool_result
+
+    scope_id = "tenant-a:secret-account"
+    manifest = SavedTool(
+        name="check_order_status",
+        description="Read the current order status from the vendor portal.",
+        task="check order status",
+        input_names=("order_id",),
+        scope_hash=ReplayPolicy(scope_id=scope_id).scope_hash(),
+        precondition={"url_contains": "example.com"},
+        postcondition={"text_contains": "Logged in"},
+        route_pattern="/login",
+        workflow_version=1,
+        side_effect="read_only",
+        ttl_seconds=300,
+        mutation_guard=True,
+        mutation_threshold=20,
+        result_spec={
+            "order_id": {"source": "input", "name": "order_id"},
+            "status": {"source": "text", "selector": "[data-order-status]"},
+            "page_url": {"source": "url"},
+        },
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        cache.save_tool(manifest)
+        loaded = cache.get_tool("check_order_status")
+        assert loaded is not None
+        assert loaded.as_dict()["input_schema"]["required"] == ["order_id"]
+        assert cache.stats()["saved_tools"] == 1
+        assert scope_id.encode() not in (Path(tmp) / "test.db").read_bytes()
+
+        first = await extract_tool_result(
+            FakeBridge(text="Packed"), loaded.result_spec, {"order_id": "A-100"}
+        )
+        second = await extract_tool_result(
+            FakeBridge(text="Delivered"), loaded.result_spec, {"order_id": "A-101"}
+        )
+        assert first == {
+            "order_id": "A-100",
+            "status": "Packed",
+            "page_url": "https://example.com/login",
+        }
+        assert second["status"] == "Delivered"
+        assert cache.delete_tool("check_order_status") is True
+
+    with pytest.raises(ToolManifestError, match="sensitive inputs"):
+        SavedTool(
+            name="leak_password",
+            description="Invalid result schema.",
+            task="invalid",
+            input_names=("password",),
+            scope_hash=ReplayPolicy(scope_id="tenant-a").scope_hash(),
+            precondition=TEST_PRECONDITION,
+            postcondition=TEST_POSTCONDITION,
+            route_pattern="/login",
+            workflow_version=1,
+            side_effect="read_only",
+            ttl_seconds=300,
+            mutation_guard=True,
+            mutation_threshold=20,
+            result_spec={"password": {"source": "input", "name": "password"}},
+        )
 
 
 def test_cli_inspect_cache_redacts_fields():
@@ -914,6 +982,149 @@ async def test_dependency_free_workflow_adapter_replays_semantic_actions(monkeyp
         assert hit.report is not None
         assert hit.report.status == "hit"
         assert any(method == "Input.insertText" for method, _ in warm_bridge.sent)
+
+
+@pytest.mark.asyncio
+async def test_workflow_adapter_returns_fresh_result_with_changed_variables(monkeypatch):
+    from terx.integrations.workflow import TerxWorkflow
+
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        cold_bridge = FakeBridge(text="Logged in — Order A-100: packed")
+        workflow = TerxWorkflow(
+            cache=cache,
+            bridge=cold_bridge,
+            task="check order status",
+            scope_id=TEST_SCOPE,
+            variables={"order_id": "placeholder"},
+            precondition=TEST_PRECONDITION,
+            postcondition=TEST_POSTCONDITION,
+            side_effect="read_only",
+        )
+
+        async def cold_path(browser):
+            await browser.type_into("textbox", "Email", "order_id")
+            await browser.click("button", "Login")
+
+        async def read_status(bridge):
+            return {"status": bridge.text}
+
+        miss = await workflow.run(
+            cold_path,
+            variables={"order_id": "A-100"},
+            result_reader=read_status,
+        )
+        assert miss.cache_hit is False
+        assert miss.value == {"status": "Logged in — Order A-100: packed"}
+
+        warm_bridge = FakeBridge(text="Logged in — Order A-101: delivered")
+        warm_workflow = TerxWorkflow(
+            cache=cache,
+            bridge=warm_bridge,
+            task="check order status",
+            scope_id=TEST_SCOPE,
+            variables={"order_id": "placeholder"},
+            precondition=TEST_PRECONDITION,
+            postcondition=TEST_POSTCONDITION,
+            side_effect="read_only",
+        )
+
+        async def should_not_run(_):
+            raise AssertionError("cold path ran on TERX cache hit")
+
+        hit = await warm_workflow.run(
+            should_not_run,
+            variables={"order_id": "A-101"},
+            result_reader=read_status,
+        )
+        assert hit.cache_hit is True
+        assert hit.value == {"status": "Logged in — Order A-101: delivered"}
+        assert ("Input.insertText", {"text": "A-101"}) in warm_bridge.sent
+
+        with pytest.raises(ValueError, match="declared at construction"):
+            await warm_workflow.run(should_not_run, variables={"unknown": "A-102"})
+
+
+@pytest.mark.asyncio
+async def test_saved_mcp_tool_replays_after_browser_restart(monkeypatch):
+    from terx.integrations.workflow import TerxWorkflow
+    from terx.server.mcp import TERXServer
+    from terx.tools import SavedTool
+
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    class RestartedSession:
+        def __init__(self, bridge):
+            self._bridge = bridge
+
+        def bridge(self):
+            return self._bridge
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        recorder_bridge = FakeBridge()
+        workflow = TerxWorkflow(
+            cache=cache,
+            bridge=recorder_bridge,
+            task="check order status",
+            scope_id=TEST_SCOPE,
+            variables={"order_id": "A-100"},
+            precondition=TEST_PRECONDITION,
+            postcondition=TEST_POSTCONDITION,
+            side_effect="read_only",
+        )
+
+        async def cold_path(browser):
+            await browser.type_into("textbox", "Email", "order_id")
+            await browser.click("button", "Login")
+
+        await workflow.run(cold_path)
+        cache.save_tool(
+            SavedTool(
+                name="check_order_status",
+                description="Read the current order status.",
+                task="check order status",
+                input_names=("order_id",),
+                scope_hash=ReplayPolicy(scope_id=TEST_SCOPE).scope_hash(),
+                precondition=TEST_PRECONDITION,
+                postcondition=TEST_POSTCONDITION,
+                route_pattern=None,
+                workflow_version=1,
+                side_effect="read_only",
+                ttl_seconds=86_400,
+                mutation_guard=True,
+                mutation_threshold=20,
+                result_spec={
+                    "order_id": {"source": "input", "name": "order_id"},
+                    "status": {"source": "text", "selector": "[data-order-status]"},
+                },
+            )
+        )
+
+        replay_bridge = FakeBridge(text="Logged in — Order A-101: delivered")
+        server = TERXServer(cache=cache)
+        server._session = RestartedSession(replay_bridge)
+        result = await server._run_saved_tool(
+            "check_order_status", {"order_id": "A-101"}, TEST_SCOPE
+        )
+        assert result["success"] is True
+        assert result["cache_hit"] is True
+        assert result["result"] == {
+            "order_id": "A-101",
+            "status": "Logged in — Order A-101: delivered",
+        }
+        assert ("Input.insertText", {"text": "A-101"}) in replay_bridge.sent
+
+        wrong_scope = await server._run_saved_tool(
+            "check_order_status", {"order_id": "A-102"}, "tenant-b"
+        )
+        assert wrong_scope["refused"] is True
 
 
 @pytest.mark.asyncio
@@ -1479,6 +1690,8 @@ def test_ledger_hit_str():
     s = str(ledger)
     assert "Cache HIT" in s
     assert "12 commands" in s
+    assert "TERX model calls: 0" in s
+    assert "LLM calls saved" not in s
     assert "run #3" in s
 
 

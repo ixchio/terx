@@ -1,6 +1,6 @@
 # Quick start
 
-TERX v0.4 caches only explicit, policy-bound semantic workflows. Before using
+TERX v0.5 caches only explicit, policy-bound semantic workflows. Before using
 it, decide what caller scope can run the workflow, what page state proves it is
 safe to start, and what outcome proves success.
 
@@ -116,6 +116,39 @@ The embedding application must construct `TERXServer` with an approval verifier
 that consumes it; the standard `terx-server` command fails closed. Check each
 result's `report`: it distinguishes `hit`, `miss`, `refused`, and `failed`.
 
+### Save a reusable tool
+
+After the successful `browser_task_finish`, turn the reviewed workflow into a
+named tool. The save operation persists input names, policy, result rules, and
+a scope digest—not literal inputs, result payloads, or the raw scope.
+
+```text
+browser_tool_save(
+  name="check_order_status",
+  description="Return a current vendor order status.",
+  task="check order status in vendor portal",
+  input_names=["order_id"],
+  scope_id="test:vendor:orders",
+  precondition={"url_contains": "/orders"},
+  postcondition={"selector_exists": "[data-order-status]"},
+  result_spec={
+    "order_id": {"source": "input", "name": "order_id"},
+    "status": {"source": "text", "selector": "[data-order-status]"}
+  }
+)
+
+browser_tool_list()
+browser_tool_run(
+  name="check_order_status",
+  inputs={"order_id": "A-101"},
+  scope_id="test:vendor:orders"
+)
+```
+
+`browser_tool_run` has no hidden agent fallback. It returns a fresh result only
+after a matching policy-bound replay; otherwise it returns a miss or refusal
+for the caller to escalate deliberately.
+
 Generate that exact config without installing anything into the client:
 
 ```bash
@@ -134,3 +167,9 @@ terx eval-local
 The local eval starts a temporary local web page and headless Chrome. It proves
 the supported semantic path only; it is not a claim that TERX can replay every
 website or browser agent.
+
+Run the named-tool example by itself with:
+
+```bash
+python3 examples/saved_tool_order_status.py
+```

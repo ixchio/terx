@@ -9,19 +9,22 @@ semantic targets, and outcome proof match the current run.
 | Guide | Description |
 | --- | --- |
 | [Quick start](quickstart.md) | Python and MCP replay contracts |
-| [Integrations](integrations.md) | Lightweight MCP and Python workflow adapter |
+| [Integrations](integrations.md) | Lightweight MCP, saved tools, and Python workflow adapter |
 | [Developer guide](development.md) | Semantic IR, policy boundary, and tests |
-| [v0.4.0 release](release.md) | Shipped behavior, verification, and support boundary |
+| [v0.5.0 release](release-v0.5.0.md) | Saved tools, fresh results, and verification |
+| [v0.4.0 release](release.md) | Historical replay-contract release |
 | [Benchmarks](benchmarks.md) | Historical benchmark methodology and limits |
 | [Project structure](project-structure.md) | Repository layout |
 | [Stagehand](stagehand.md) | Experimental integration notes |
 | [Changelog](changelog.md) | Version history |
 
-## v0.4 boundary
+## v0.5 boundary
 
 TERX stores only labelled navigation, click, and named-variable text actions.
 It refuses raw JavaScript, coordinate input, ambiguous targets, failed
-conditions, wrong scope, and destructive hits without per-run approval. See the
+conditions, wrong scope, and destructive hits without per-run approval. v0.5
+can promote an already approved record into a named MCP tool with fresh,
+declarative page output; it does not add a general-purpose browser runtime. See the
 [quick start](quickstart.md) for the supported contract and
 [SECURITY.md](../SECURITY.md) for data and egress boundaries.
 

@@ -3,7 +3,7 @@
 **Local, policy-enforced replay for approved browser-agent workflows.**
 
 TERX records a small, semantic workflow after a browser agent succeeds, then
-replays it through Chrome DevTools Protocol without another model call. It is
+replays it through Chrome DevTools Protocol without a TERX model call. It is
 for repeatable workflows whose starting state, caller scope, and successful
 outcome can be stated explicitly.
 
@@ -23,7 +23,7 @@ re-resolves every accessible target, executes only the semantic action set
 below, then verifies the intended outcome. If any check is ambiguous or
 false, it refuses instead of guessing.
 
-## v0.4: Trustworthy Replay
+## Replay contract
 
 Every cacheable workflow must declare:
 
@@ -207,12 +207,60 @@ On a warm hit, `sign_in` is never called. Direct mutating bridge calls are
 intentionally excluded: use the adapter's semantic actions or TERX refuses to
 call it a replayable workflow. See [integration guidance](https://github.com/ixchio/terx/blob/main/docs/integrations.md).
 
+## v0.5: save a task as a tool
+
+The MCP server can persist a reviewed workflow as a named, discoverable tool.
+The manifest contains the task contract, input names, result schema, and a
+scope digest—never input values or the raw scope. On a call, TERX verifies the
+caller scope, replays only a matching approved workflow, then reads a small
+declared set of **current** page fields. A miss, drift, changed scope, or
+missing result field is a refusal; it never launches a hidden cold agent.
+
+```text
+# Agent A records a supported workflow, then promotes it.
+browser_task_start(...)
+browser_type(...)
+browser_click(...)
+browser_task_finish(success=true)
+browser_tool_save(
+  name="check_order_status",
+  input_names=["order_id"],
+  result_spec={
+    "order_id": {"source": "input", "name": "order_id"},
+    "status": {"source": "text", "selector": "[data-order-status]"}
+  },
+  ...the reviewed scope and replay policy...
+)
+
+# Any MCP client using that TERX server/cache can discover and call it later.
+browser_tool_list()
+browser_tool_run(name="check_order_status", inputs={"order_id": "A-101"}, scope_id="...")
+```
+
+Result fields are intentionally narrow: visible text from a CSS selector, page
+title, page URL, or an echoed non-sensitive input. TERX does not save arbitrary
+JavaScript or form values as a tool result.
+
+Run the complete local `check_order_status(account_id, order_id)` example:
+
+```bash
+python3 examples/saved_tool_order_status.py
+```
+
+[Watch the reproducible 20-second demo](docs/assets/terx-v0.5-saved-tool-demo.mp4).
+It records the approved local lookup, saves its contract, reconnects Chrome, and
+returns a fresh status for a different account and order ID. The video shows
+**zero TERX model calls during replay**; it does not claim the caller or browser
+is free.
+
 ## Security model
 
 - The cache is local SQLite under `.terx/`; protect that directory as
   application data.
 - Named typed values are stored as `{{placeholders}}`; typed text without a
   named variable is intentionally not cacheable.
+- A saved tool stores only its input names and scope digest. Its live result is
+  returned to the current caller and is not written into the replay cache.
 - Password, token, key, and similar named fields are redacted at cache and
   audit boundaries. Cached response payloads are not retained.
 - Scope IDs are represented by a digest in the cache; scope is verified before
@@ -226,8 +274,8 @@ full boundary and reporting policy.
 
 ## Supported integration surface
 
-Python, the dependency-free workflow adapter, and the built-in MCP server are
-supported in v0.4. The Browser Use adapter is experimental: it can only record
+Python, the dependency-free workflow adapter, saved MCP tools, and the built-in
+MCP server are supported in v0.5. The Browser Use adapter is experimental: it can only record
 agents that intentionally drive the TERX CDP bridge supplied to it. A normal
 Browser Use session is not a drop-in capture source.
 

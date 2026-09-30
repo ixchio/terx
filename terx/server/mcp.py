@@ -24,11 +24,19 @@ from terx.cache.cache import (
     ApprovalVerifier,
     MemoryCache,
     RecordingContext,
+    ReplayPolicy,
     ReplayRefused,
     session_for,
 )
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
+from terx.tools import (
+    SavedTool,
+    ToolManifestError,
+    ToolResultError,
+    extract_tool_result,
+    validate_tool_inputs,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -124,6 +132,8 @@ class TERXServer:
                 "Use browser_get_state first to see what's on the page. "
                 "Wrap repeated workflows with browser_task_start and "
                 "browser_task_finish only when scope, preconditions, and outcomes are explicit. "
+                "Use browser_tool_save after a successful recorded workflow, then "
+                "browser_tool_list and browser_tool_run to reuse it across MCP clients. "
                 "Destructive replay also requires a host-configured consume-once approval verifier."
             ),
         )
@@ -167,6 +177,105 @@ class TERXServer:
                 "google-chrome --remote-debugging-port=9222"
             )
         return self._session
+
+    async def _run_saved_tool(
+        self,
+        name: str,
+        inputs: dict[str, str],
+        scope_id: str,
+        *,
+        replay_approval: str | None = None,
+    ) -> dict:
+        """Replay one manifest and return newly extracted, non-persisted output."""
+        manifest = self._cache.get_tool(name)
+        if manifest is None:
+            return {"success": False, "error": f"Saved tool {name!r} does not exist."}
+        try:
+            tool_inputs = validate_tool_inputs(manifest.input_names, inputs)
+        except ToolManifestError as exc:
+            return {"success": False, "tool": name, "error": str(exc)}
+        if not isinstance(scope_id, str) or not scope_id:
+            return {"success": False, "tool": name, "error": "scope_id is required."}
+        if ReplayPolicy(scope_id=scope_id).scope_hash() != manifest.scope_hash:
+            return {
+                "success": False,
+                "tool": name,
+                "refused": True,
+                "error": "scope_id does not match this saved tool.",
+            }
+
+        await self._ensure_connected()
+        bridge = self._get_session().bridge()
+        context = session_for(
+            self._cache,
+            bridge,
+            manifest.task,
+            variables=tool_inputs,
+            scope_id=scope_id,
+            route_pattern=manifest.route_pattern,
+            workflow_version=manifest.workflow_version,
+            side_effect=manifest.side_effect,
+            precondition=manifest.precondition,
+            postcondition=manifest.postcondition,
+            ttl_seconds=manifest.ttl_seconds,
+            mutation_guard=manifest.mutation_guard,
+            mutation_threshold=manifest.mutation_threshold,
+            approval_verifier=self._approval_verifier,
+        )
+        entered = False
+        try:
+            await context.__aenter__()
+            entered = True
+            if not context.hit:
+                error = RuntimeError("saved tool has no matching approved workflow for this page")
+                await context.__aexit__(type(error), error, error.__traceback__)
+                entered = False
+                return {
+                    "success": False,
+                    "tool": name,
+                    "cache_hit": False,
+                    "refused": True,
+                    "error": str(error),
+                }
+
+            await context.replay(approval_token=replay_approval)
+            output = await extract_tool_result(bridge, manifest.result_spec, tool_inputs)
+            await context.__aexit__(None, None, None)
+            entered = False
+            return {
+                "success": True,
+                "tool": name,
+                "cache_hit": True,
+                "result": output,
+                "ledger": str(context.ledger) if context.ledger else None,
+                "report": context.report.as_dict() if context.report else None,
+            }
+        except ReplayRefused as exc:
+            if entered:
+                await context.__aexit__(type(exc), exc, exc.__traceback__)
+            return {
+                "success": False,
+                "tool": name,
+                "cache_hit": bool(context.hit),
+                "refused": True,
+                "error": str(exc),
+                "report": context.report.as_dict() if context.report else None,
+            }
+        except ToolResultError as exc:
+            if entered:
+                await context.__aexit__(None, None, None)
+            return {
+                "success": False,
+                "tool": name,
+                "cache_hit": bool(context.hit),
+                "replayed": True,
+                "error": str(exc),
+                "report": context.report.as_dict() if context.report else None,
+            }
+        except Exception as exc:
+            if entered:
+                await context.__aexit__(type(exc), exc, exc.__traceback__)
+            return {"success": False, "tool": name, "error": str(exc)}
 
     def _register_tools(self) -> None:
         """Register all MCP tools as instance methods."""
@@ -314,6 +423,84 @@ class TERXServer:
                 "commands_recorded": recorded,
                 "note": "Task discarded.",
             }
+
+        @self.mcp.tool()
+        async def browser_tool_save(
+            name: str,
+            description: str,
+            task: str,
+            input_names: list[str],
+            scope_id: str,
+            precondition: dict,
+            postcondition: dict,
+            result_spec: dict[str, dict[str, str]],
+            route_pattern: str | None = None,
+            workflow_version: int = 1,
+            side_effect: str = "mutating",
+            ttl_seconds: int | None = 86_400,
+            mutation_guard: bool = True,
+            mutation_threshold: int = 20,
+            replace: bool = False,
+        ) -> dict:
+            """Save a reviewed, already-recorded workflow as a discoverable MCP tool.
+
+            Save this only after ``browser_task_finish(success=true)`` recorded
+            the matching workflow. TERX stores the scope digest and input names,
+            never the raw scope or input values. Result rules can only read page
+            text, title, URL, or echo a non-sensitive input.
+            """
+            try:
+                manifest = SavedTool(
+                    name=name,
+                    description=description,
+                    task=task,
+                    input_names=tuple(input_names),
+                    scope_hash=ReplayPolicy(scope_id=scope_id).scope_hash(),
+                    precondition=precondition,
+                    postcondition=postcondition,
+                    route_pattern=route_pattern,
+                    workflow_version=workflow_version,
+                    side_effect=side_effect,
+                    ttl_seconds=ttl_seconds,
+                    mutation_guard=mutation_guard,
+                    mutation_threshold=mutation_threshold,
+                    result_spec=result_spec,
+                )
+                self._cache.save_tool(manifest, replace=replace)
+            except (ToolManifestError, ValueError, TypeError) as exc:
+                return {"success": False, "error": str(exc)}
+            return {
+                "success": True,
+                "tool": manifest.as_dict(),
+                "note": "The manifest is saved. browser_tool_run will refuse until it finds the matching approved workflow.",
+            }
+
+        @self.mcp.tool()
+        async def browser_tool_list() -> dict:
+            """Discover saved TERX tools and their exact public input/result schemas."""
+            return {"tools": [tool.as_dict() for tool in self._cache.list_tools()]}
+
+        @self.mcp.tool()
+        async def browser_tool_run(
+            name: str,
+            inputs: dict[str, str],
+            scope_id: str,
+            replay_approval: str | None = None,
+        ) -> dict:
+            """Run a saved tool with current inputs and return fresh page output.
+
+            This never starts a cold agent path. It either replays the exact
+            approved semantic workflow and reads the declared live fields, or
+            returns a refusal/miss for the caller to handle.
+            """
+            return await self._run_saved_tool(
+                name, inputs, scope_id, replay_approval=replay_approval
+            )
+
+        @self.mcp.tool()
+        async def browser_tool_delete(name: str) -> dict:
+            """Remove a saved tool manifest; its historical replay record is retained."""
+            return {"success": self._cache.delete_tool(name), "tool": name}
 
         @self.mcp.tool()
         async def browser_get_state() -> dict:
@@ -592,6 +779,7 @@ class TERXServer:
                 "cached_sequences": stats["total_sequences"],
                 "total_cache_hits": stats["total_hits"],
                 "unique_domains": stats["domains"],
+                "saved_tools": stats["saved_tools"],
                 "note": "Hits are scoped semantic replays; inspect the report before treating them as completed.",
             }
 

@@ -4,6 +4,38 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
+## [0.5.0] - 2026-10-01
+
+### Added
+
+- Added data-only saved tool manifests and MCP commands to save, discover, run,
+  and delete a named approved workflow. A tool call validates exact input names,
+  scope, policy, semantic targets, and postcondition before returning fresh
+  declared page output.
+- Added a constrained live-result schema for visible selector text, page title,
+  page URL, and echoed non-sensitive input. Result payloads are never cached.
+- Added per-run variable overrides and optional fresh result readers to
+  `TerxWorkflow.run()`, so a warm replay can return current structured data.
+- Added regression coverage for changed inputs, browser-session restart, scope
+  refusal, manifest redaction, and fresh result extraction.
+
+### Changed
+
+- Replaced the action-count-derived `estimated_llm_calls_saved` display with
+  `model_calls_during_replay`. TERX reports zero model calls made by TERX
+  during replay; provider-side savings must come from host usage records.
+- Migrated the local SQLite schema to v4 for compact saved tool manifests.
+
+### Security
+
+- Saved manifests retain only a scope digest and input names, never raw scope
+  identifiers or input values. Sensitive input names cannot be echoed into a
+  tool result.
+- Named tool calls have no implicit cold-agent or self-healing fallback. A
+  missing matching replay, drift, wrong scope, or unreadable result is explicit.
+
+---
+
 ## [0.4.0] - 2026-09-29
 
 ### Changed
