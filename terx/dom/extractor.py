@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 try:
     import mmh3
+
     HAS_MMH3 = True
 except ImportError:
     HAS_MMH3 = False
@@ -24,10 +25,24 @@ logger = logging.getLogger(__name__)
 
 # Roles that represent interactable elements
 INTERACTABLE_ROLES = {
-    "button", "link", "textbox", "searchbox", "combobox",
-    "listbox", "option", "checkbox", "radio", "switch",
-    "menuitem", "tab", "treeitem", "spinbutton", "slider",
-    "scrollbar", "menuitemcheckbox", "menuitemradio",
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "combobox",
+    "listbox",
+    "option",
+    "checkbox",
+    "radio",
+    "switch",
+    "menuitem",
+    "tab",
+    "treeitem",
+    "spinbutton",
+    "slider",
+    "scrollbar",
+    "menuitemcheckbox",
+    "menuitemradio",
 }
 
 
@@ -40,13 +55,14 @@ class AXElement:
     ``current_value``  — the live form-field value (volatile; excluded from hash)
     ``label``          — display label: semantic_name if set, else current_value
     """
-    id: int                          # stable deterministic ID (hash-based)
+
+    id: int  # stable deterministic ID (hash-based)
     role: str
-    semantic_name: str               # stable aria-name / placeholder
-    current_value: str               # live value (spinbutton, combobox selected)
-    node_id: str                     # Chrome AX node ID
-    backend_dom_id: int              # Chrome backend DOM node ID
-    bounds: dict | None = None       # {x, y, width, height} if available
+    semantic_name: str  # stable aria-name / placeholder
+    current_value: str  # live value (spinbutton, combobox selected)
+    node_id: str  # Chrome AX node ID
+    backend_dom_id: int  # Chrome backend DOM node ID
+    bounds: dict | None = None  # {x, y, width, height} if available
     depth: int = 0
 
     @property
@@ -58,11 +74,12 @@ class AXElement:
 @dataclass
 class DOMSnapshot:
     """Full accessibility snapshot of a page at one point in time."""
+
     url: str
     title: str
     elements: list[AXElement]
-    structural_hash: str             # fuzzy hash of the interactable tree
-    role_sequence: str               # raw role sequence for similarity comparison
+    structural_hash: str  # fuzzy hash of the interactable tree
+    role_sequence: str  # raw role sequence for similarity comparison
     element_count: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -92,15 +109,15 @@ class DOMExtractor:
     async def snapshot(self, bridge: CDPBridge) -> DOMSnapshot:
         """Extract the full AX tree for the current page."""
         # Use send_internal() so snapshots never pollute task recordings.
-        url_result = await bridge.send_internal("Runtime.evaluate", {
-            "expression": "window.location.href"
-        })
+        url_result = await bridge.send_internal(
+            "Runtime.evaluate", {"expression": "window.location.href"}
+        )
         url = url_result.get("result", {}).get("value", "")
 
         # Get title the same way (avoids Target.getTargetInfo needing targetId)
-        title_result = await bridge.send_internal("Runtime.evaluate", {
-            "expression": "document.title"
-        })
+        title_result = await bridge.send_internal(
+            "Runtime.evaluate", {"expression": "document.title"}
+        )
         title = title_result.get("result", {}).get("value", "")
 
         # Get full accessibility tree (no extra params — fetchRelativeNodes doesn't exist)
@@ -133,9 +150,7 @@ class DOMExtractor:
 
             # Stable semantic name (aria-label, placeholder, description)
             semantic_name = (
-                self._get_value(node.get("name"))
-                or self._get_value(node.get("description"))
-                or ""
+                self._get_value(node.get("name")) or self._get_value(node.get("description")) or ""
             ).strip()[:80]
 
             # Live form-field value (excluded from structural hash)
@@ -171,7 +186,9 @@ class DOMExtractor:
             collision_count = 0
             while el.id in seen_ids:
                 # Use secondary hash with collision counter to avoid clustering
-                id_input = f"{el.role}:{el.semantic_name}:{el.backend_dom_id}:{collision_count}".encode()
+                id_input = (
+                    f"{el.role}:{el.semantic_name}:{el.backend_dom_id}:{collision_count}".encode()
+                )
                 el.id = int(hashlib.md5(id_input).hexdigest()[:8], 16) % 100_000
                 collision_count += 1
                 if collision_count > 10:  # Prevent infinite loops on pathological cases
@@ -195,6 +212,7 @@ class DOMExtractor:
 # Structural hasher + REAL similarity                                   #
 # ------------------------------------------------------------------ #
 
+
 def _build_role_sequence(elements: list[AXElement]) -> str:
     """
     Build the canonical role sequence string for cache lookup.
@@ -208,10 +226,7 @@ def _build_role_sequence(elements: list[AXElement]) -> str:
       - ``current_value`` — live form-field value (changes between cold/warm runs)
       - CSS classes, element IDs, data-* attributes, pixel positions
     """
-    parts = [
-        f"{el.role}:{el.semantic_name[:20]}:{el.depth}"
-        for el in elements
-    ]
+    parts = [f"{el.role}:{el.semantic_name[:20]}:{el.depth}" for el in elements]
     return "|".join(parts)
 
 
@@ -271,9 +286,9 @@ def _levenshtein_distance(s: list, t: list) -> int:
         for j, t_tok in enumerate(t, 1):
             cost = 0 if s_tok == t_tok else 1
             curr[j] = min(
-                curr[j - 1] + 1,      # insertion
-                prev[j] + 1,          # deletion
-                prev[j - 1] + cost,   # substitution
+                curr[j - 1] + 1,  # insertion
+                prev[j] + 1,  # deletion
+                prev[j - 1] + cost,  # substitution
             )
         prev, curr = curr, prev
 

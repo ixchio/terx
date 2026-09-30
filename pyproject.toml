@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "terx"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local policy-enforced replay for approved browser-agent workflows."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -52,7 +52,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-benchmark>=4.0",
     "rich>=13.0",
-    "ruff>=0.4",
+    "ruff==0.15.11",
     "python-dotenv>=1.0",
 ]
 all = ["terx[embeddings,vision,healing,browser-use,dev]"]

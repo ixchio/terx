@@ -4,6 +4,17 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
+## [0.5.1] - 2026-10-01
+
+### Fixed
+
+- Pinned the CI and development Ruff version to `0.15.11`, the reviewed
+  project rule set, so an unreviewed linter upgrade cannot fail a release with
+  new default rules. Reformatted the remaining source files under that rule
+  set.
+
+---
+
 ## [0.5.0] - 2026-10-01
 
 ### Added

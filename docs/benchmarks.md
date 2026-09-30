@@ -24,8 +24,8 @@ order_id)` to a saved tool, reconnects to a fresh browser CDP session, invokes
 it with a different account and order ID, reads the current status, and checks
 that an ambiguous target is refused.
 
-On the 2026-10-01 release machine, one run reported five warm hits, a 166.4 ms
-cold median, and a 159.2 ms warm median. The order-status run returned its new
+On the 2026-10-01 release machine, one run reported five warm hits, a 161.9 ms
+cold median, and a 108.4 ms warm median. The order-status run returned its new
 live value after the reconnect and made **0 TERX model calls during replay**.
 This is a local fixture result, not a production latency claim, a provider-cost
 measurement, or a competitor comparison.

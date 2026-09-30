@@ -227,7 +227,9 @@ class CDPBridge:
                     if future:
                         try:
                             if "error" in msg:
-                                future.set_exception(CDPError(msg["error"].get("message", "CDP error")))
+                                future.set_exception(
+                                    CDPError(msg["error"].get("message", "CDP error"))
+                                )
                             else:
                                 future.set_result(msg.get("result", {}))
                         except asyncio.InvalidStateError:

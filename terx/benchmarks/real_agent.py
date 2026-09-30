@@ -38,6 +38,7 @@ from typing import Any
 # Load .env if present (pip install python-dotenv, or ignored if not installed)
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -56,13 +57,13 @@ from terx.dom.extractor import DOMExtractor
 # Config                                                               #
 # ------------------------------------------------------------------ #
 
-GROQ_MODEL    = "openai/gpt-oss-120b"
-PORT          = 8898
-MAX_STEPS     = 12
-DEBUG         = os.environ.get("TERX_DEBUG") == "1"
+GROQ_MODEL = "openai/gpt-oss-120b"
+PORT = 8898
+MAX_STEPS = 12
+DEBUG = os.environ.get("TERX_DEBUG") == "1"
 
 # Groq pricing for openai/gpt-oss-120b (per 1M tokens, June 2026)
-PRICE_INPUT_PER_M  = 2.50
+PRICE_INPUT_PER_M = 2.50
 PRICE_OUTPUT_PER_M = 10.00
 
 # This is a reasoning model — it uses thinking tokens internally.
@@ -196,7 +197,12 @@ TASKS = [
         "Settings saved",
     ),
     ("Data Table Pagination", 6, ["Select Row 1", "Next Page"], "Page advanced"),
-    ("Support Ticket Submit", 7, ["Subject", "Describe your issue...", "Submit Ticket"], "Ticket submitted"),
+    (
+        "Support Ticket Submit",
+        7,
+        ["Subject", "Describe your issue...", "Submit Ticket"],
+        "Ticket submitted",
+    ),
     ("Fuzzy Search Navigation", 8, ["Type query...", "Fuzzy Search"], "Search done"),
     ("Profile Update Flow", 9, ["Bio...", "USA", "Update Profile"], "Profile updated"),
     ("Complex Nested Form", 10, ["Name", "Accept all terms", "Finish Benchmark"], "Done!"),
@@ -206,19 +212,24 @@ TASKS = [
 # Local server                                                          #
 # ------------------------------------------------------------------ #
 
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
         self.wfile.write(HTML.encode())
-    def log_message(self, *_): pass
+
+    def log_message(self, *_):
+        pass
+
 
 def start_server(port: int) -> HTTPServer:
     srv = HTTPServer(("127.0.0.1", port), Handler)
-    srv.socket.setsockopt(1, 2, 1)   # SO_REUSEADDR
+    srv.socket.setsockopt(1, 2, 1)  # SO_REUSEADDR
     Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
 
 # ------------------------------------------------------------------ #
 # LLM Agent                                                            #
@@ -269,9 +280,9 @@ async def run_llm_agent(
     extractor = DOMExtractor()
     # Page is already loaded — caller navigated before session_for entry
 
-    total_input_tokens  = 0
+    total_input_tokens = 0
     total_output_tokens = 0
-    steps               = 0
+    steps = 0
     t0 = time.perf_counter()
 
     # Conversation history so the model sees what it has already done
@@ -282,8 +293,7 @@ async def run_llm_agent(
             # Snapshot current AX tree
             snapshot = await extractor.snapshot(bridge)
             elements_desc = "\n".join(
-                f"  id={el.id} role={el.role} label={el.label!r}"
-                for el in snapshot.elements
+                f"  id={el.id} role={el.role} label={el.label!r}" for el in snapshot.elements
             )
 
             user_content = (
@@ -304,14 +314,14 @@ async def run_llm_agent(
             resp = client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=messages,
-                temperature=1,          # required by this model
+                temperature=1,  # required by this model
                 max_completion_tokens=MAX_TOKENS_PER_CALL,
                 reasoning_effort="medium",
                 stream=False,
             )
 
             steps += 1
-            total_input_tokens  += resp.usage.prompt_tokens
+            total_input_tokens += resp.usage.prompt_tokens
             total_output_tokens += resp.usage.completion_tokens
 
             content = (resp.choices[0].message.content or "").strip()
@@ -319,8 +329,8 @@ async def run_llm_agent(
                 print(f"      [LLM step {steps}] → {content!r}")
 
             # Add to history so model tracks its own actions
-            history.append({"role": "user",      "content": user_content})
-            history.append({"role": "assistant",  "content": content})
+            history.append({"role": "user", "content": user_content})
+            history.append({"role": "assistant", "content": content})
 
             # Parse action
             try:
@@ -330,8 +340,8 @@ async def run_llm_agent(
             except Exception:
                 break  # unparseable — stop
 
-            act    = action.get("action", "done")
-            el_id  = action.get("element_id")
+            act = action.get("action", "done")
+            el_id = action.get("element_id")
 
             if act == "done":
                 break
@@ -359,28 +369,43 @@ async def run_llm_agent(
                     x = (c[0] + c[2] + c[4] + c[6]) / 4
                     y = (c[1] + c[3] + c[5] + c[7]) / 4
                     for ev in ["mouseMoved", "mousePressed", "mouseReleased"]:
-                        await bridge.send("Input.dispatchMouseEvent", {
-                            "type": ev, "x": x, "y": y,
-                            "button": "left", "clickCount": 1,
-                        })
+                        await bridge.send(
+                            "Input.dispatchMouseEvent",
+                            {
+                                "type": ev,
+                                "x": x,
+                                "y": y,
+                                "button": "left",
+                                "clickCount": 1,
+                            },
+                        )
                 await asyncio.sleep(0.15)
 
     except Exception as exc:
         elapsed = time.perf_counter() - t0
-        cost    = _cost(total_input_tokens, total_output_tokens)
+        cost = _cost(total_input_tokens, total_output_tokens)
         return AgentRun(
-            task_name=task_name, wall_time_s=elapsed,
-            input_tokens=total_input_tokens, output_tokens=total_output_tokens,
-            steps=steps, cost_usd=cost, success=False, error=str(exc),
+            task_name=task_name,
+            wall_time_s=elapsed,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            steps=steps,
+            cost_usd=cost,
+            success=False,
+            error=str(exc),
         )
 
     elapsed = time.perf_counter() - t0
-    cost    = _cost(total_input_tokens, total_output_tokens)
+    cost = _cost(total_input_tokens, total_output_tokens)
     postcondition_ok = await _page_contains(bridge, expected_text)
     return AgentRun(
-        task_name=task_name, wall_time_s=elapsed,
-        input_tokens=total_input_tokens, output_tokens=total_output_tokens,
-        steps=steps, cost_usd=cost, success=postcondition_ok,
+        task_name=task_name,
+        wall_time_s=elapsed,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+        steps=steps,
+        cost_usd=cost,
+        success=postcondition_ok,
         error="" if postcondition_ok else f"Postcondition failed: {expected_text}",
     )
 
@@ -393,10 +418,10 @@ async def _page_contains(bridge, text: str) -> bool:
     return text in result.get("result", {}).get("value", "")
 
 
-
 # ------------------------------------------------------------------ #
 # Warm replay (TERX)                                                   #
 # ------------------------------------------------------------------ #
+
 
 @dataclass
 class ReplayRun:
@@ -452,6 +477,7 @@ def _chrome_binary() -> str:
 # Main benchmark loop                                                   #
 # ------------------------------------------------------------------ #
 
+
 async def run():
     if Groq is None:
         raise SystemExit('Install benchmark extras first: pip install "terx[benchmark]"')
@@ -487,7 +513,8 @@ async def run():
             "--no-sandbox",
             "about:blank",
         ],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     await asyncio.sleep(2)
 
@@ -496,7 +523,7 @@ async def run():
         audit_dir=Path(cache_dir.name) / "audit",
     )
 
-    agent_results: list[AgentRun]  = []
+    agent_results: list[AgentRun] = []
     replay_results: list[ReplayRun] = []
 
     try:
@@ -567,21 +594,22 @@ async def run():
     print("=" * 80)
 
     total_agent_tokens = 0
-    total_agent_cost   = 0.0
-    total_agent_time   = 0.0
-    total_replay_time  = 0.0
+    total_agent_cost = 0.0
+    total_agent_time = 0.0
+    total_replay_time = 0.0
     hits = 0
 
     rows = []
     for a, r in zip(agent_results, replay_results):
-        tok  = a.input_tokens + a.output_tokens
-        spd  = round(a.wall_time_s / r.wall_time_s, 1) if r.wall_time_s > 0 else float("inf")
-        rows.append((a.task_name, a.steps, a.wall_time_s, r.wall_time_s, spd,
-                     tok, a.cost_usd, r.hit))
+        tok = a.input_tokens + a.output_tokens
+        spd = round(a.wall_time_s / r.wall_time_s, 1) if r.wall_time_s > 0 else float("inf")
+        rows.append(
+            (a.task_name, a.steps, a.wall_time_s, r.wall_time_s, spd, tok, a.cost_usd, r.hit)
+        )
         total_agent_tokens += tok
-        total_agent_cost   += a.cost_usd
-        total_agent_time   += a.wall_time_s
-        total_replay_time  += r.wall_time_s
+        total_agent_cost += a.cost_usd
+        total_agent_time += a.wall_time_s
+        total_replay_time += r.wall_time_s
         if r.hit:
             hits += 1
 
@@ -595,18 +623,29 @@ async def run():
     print("-" * len(hdr))
     for task_name, steps, at, rt, spd, tok, cost, hit in rows:
         h = "✓" if hit else "✗"
-        print(f"{task_name:<32} {steps:>5} {at:>7.2f}s {rt:>7.3f}s "
-              f"{spd:>7.1f}x {tok:>8,} ${cost:>7.4f} {h:>4}")
+        print(
+            f"{task_name:<32} {steps:>5} {at:>7.2f}s {rt:>7.3f}s "
+            f"{spd:>7.1f}x {tok:>8,} ${cost:>7.4f} {h:>4}"
+        )
     print("-" * len(hdr))
-    print(f"{'TOTAL / AVERAGE':<32} {'—':>5} {total_agent_time:>7.2f}s "
-          f"{total_replay_time:>7.3f}s {avg_spd:>7.1f}x "
-          f"{total_agent_tokens:>8,} ${total_agent_cost:>7.4f} "
-          f"{hits}/{len(rows)}")
+    print(
+        f"{'TOTAL / AVERAGE':<32} {'—':>5} {total_agent_time:>7.2f}s "
+        f"{total_replay_time:>7.3f}s {avg_spd:>7.1f}x "
+        f"{total_agent_tokens:>8,} ${total_agent_cost:>7.4f} "
+        f"{hits}/{len(rows)}"
+    )
 
     # Write local benchmark artifact. The canonical public benchmark document is
     # docs/benchmarks.md; local runs should not create a second public file.
-    md = _generate_md(rows, total_agent_time, total_replay_time, avg_spd,
-                      total_agent_tokens, total_agent_cost, hits)
+    md = _generate_md(
+        rows,
+        total_agent_time,
+        total_replay_time,
+        avg_spd,
+        total_agent_tokens,
+        total_agent_cost,
+        hits,
+    )
     benchmark_file = Path(".benchmarks/real_agent_latest.md")
     benchmark_file.parent.mkdir(parents=True, exist_ok=True)
     benchmark_file.write_text(md)
@@ -615,8 +654,9 @@ async def run():
     print(f"   Total savings: ${total_agent_cost:.4f} → $0.0000 per repeat run")
 
 
-def _generate_md(rows, total_agent_time, total_replay_time, avg_spd,
-                 total_agent_tokens, total_agent_cost, hits):
+def _generate_md(
+    rows, total_agent_time, total_replay_time, avg_spd, total_agent_tokens, total_agent_cost, hits
+):
     lines = [
         "# TERX Real Benchmark Results",
         "",

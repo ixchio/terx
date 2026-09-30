@@ -30,7 +30,7 @@ jobs:
 
     - name: Lint with Ruff
       run: |
-        pip install ruff
+        pip install "ruff==0.15.11"
         ruff check .
 
     - name: Run tests with pytest

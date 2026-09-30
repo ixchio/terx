@@ -19,7 +19,7 @@ from terx.tools import SavedTool, ToolManifestError, ToolResultError
 # Backwards compatibility alias
 MuscleMemorycache = MemoryCache
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __all__ = [
     "CDPBridge",
     "BrowserSession",

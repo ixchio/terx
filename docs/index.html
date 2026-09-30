@@ -25,7 +25,7 @@
 </head>
 <body>
 <main>
-  <div class="eyebrow">TERX v0.5</div>
+  <div class="eyebrow">TERX v0.5.1</div>
   <h1>Turn an approved browser task into a tool that can refuse.</h1>
   <p><strong>TERX is a local, policy-enforced replay gate for approved browser-agent workflows.</strong> It reuses a narrow semantic action sequence only when its caller scope, starting conditions, accessible targets, and outcome proof match.</p>
 
@@ -55,9 +55,9 @@ terx mcp-config --client codex
 from terx.integrations.workflow import TerxWorkflow</pre>
   <p>MCP setup is a copy-paste stdio configuration. The Python adapter reuses TERX's existing Chrome CDP connection and local SQLite cache: no Playwright or Selenium dependency, second browser, cloud worker, or resident helper.</p>
 
-  <h2>Released: v0.5.0</h2>
+  <h2>Released: v0.5.1</h2>
   <p>v0.5 adds named local MCP tools: save a reviewed semantic workflow, discover its exact input/result schema, call it with new values, and get fresh declared output. A wrong scope, drift, missing record, or ambiguous target is a refusal—not a hidden agent run.</p>
-  <p><a href="release-v0.5.0.md">Release guide</a> · <a href="https://github.com/ixchio/terx/releases/tag/v0.5.0">GitHub release</a> · <a href="https://pypi.org/project/terx/0.5.0/">PyPI package</a></p>
+  <p><a href="release-v0.5.0.md">Feature release guide</a> · <a href="release-v0.5.1.md">CI patch notes</a> · <a href="https://github.com/ixchio/terx/releases/tag/v0.5.1">GitHub release</a> · <a href="https://pypi.org/project/terx/0.5.1/">PyPI package</a></p>
 
   <h2>Verify</h2>
   <pre>pip install terx
