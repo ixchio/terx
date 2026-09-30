@@ -37,6 +37,10 @@ jobs:
       run: |
         pytest tests/ -v
 
+    - name: Verify installed Chrome
+      run: |
+        google-chrome --version || chromium --version || chromium-browser --version
+
     - name: Run real Chrome replay eval
       run: |
         python -m terx.evals.local_suite

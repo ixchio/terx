@@ -4,7 +4,7 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
-## [0.5.2] - 2026-10-01
+## [0.5.3] - 2026-10-01
 
 ### Fixed
 
@@ -15,6 +15,10 @@ All notable changes to the TERX browser memory layer are documented in this file
 - Pinned the MCP dependency to the compatible 1.x API. MCP 2.x removes the
   `FastMCP` server API used by TERX, so the prior unbounded dependency made CI
   install an incompatible runtime.
+- Hardened the real-Chrome evaluation launcher for hosted Linux: it now waits
+  for the loopback CDP listener instead of sleeping a fixed interval, uses a
+  dedicated debug address and shared-memory-safe flag, and reports Chrome's
+  startup stderr when the browser exits early.
 
 ---
 

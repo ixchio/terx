@@ -20,12 +20,13 @@
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
     .card { border:1px solid var(--line); border-radius:10px; padding:18px; background:var(--panel); }
     .card b { color:var(--accent); display:block; margin-bottom:8px; }
+    .demo-video { display:block; width:100%; max-width:760px; border:1px solid var(--line); border-radius:10px; background:#000; }
     a { color:var(--accent); }
   </style>
 </head>
 <body>
 <main>
-  <div class="eyebrow">TERX v0.5.2</div>
+  <div class="eyebrow">TERX v0.5.3</div>
   <h1>Turn an approved browser task into a tool that can refuse.</h1>
   <p><strong>TERX is a local, policy-enforced replay gate for approved browser-agent workflows.</strong> It reuses a narrow semantic action sequence only when its caller scope, starting conditions, accessible targets, and outcome proof match.</p>
 
@@ -55,9 +56,20 @@ terx mcp-config --client codex
 from terx.integrations.workflow import TerxWorkflow</pre>
   <p>MCP setup is a copy-paste stdio configuration. The Python adapter reuses TERX's existing Chrome CDP connection and local SQLite cache: no Playwright or Selenium dependency, second browser, cloud worker, or resident helper.</p>
 
-  <h2>Released: v0.5.2</h2>
+  <h2>20 seconds: save a task, then call a tool</h2>
+  <video class="demo-video" controls preload="metadata" aria-label="TERX saved tool demo">
+    <source src="assets/terx-v0.5-saved-tool-demo.mp4" type="video/mp4">
+    Your browser does not support the demo video. <a href="assets/terx-v0.5-saved-tool-demo.mp4">Download it</a>.
+  </video>
+  <p>A real local Chrome run records <code>check_order_status</code>, saves its reviewed contract, reconnects a browser session, then returns fresh status for a new account and order ID. The replay makes 0 TERX model calls; it refuses instead of silently starting an agent if the policy no longer matches.</p>
+
+  <h2>Measured, not promised</h2>
+  <p>One real Browser Use Cloud v4 smoke on a different public task returned <code>www.iana.org</code> in 16.017 seconds at $0.002516 (48,492 input and 218 output tokens). A separate Browser Use native rerun smoke after a browser restart took 4.032 seconds and reported 1,033 Groq tokens and $0.000648. These are one-run observations, not TERX-versus-Browser-Use winner claims.</p>
+  <p><a href="https://github.com/ixchio/terx/blob/main/docs/benchmarks.md">Read the raw scope, limits, memory observation, and four-mode benchmark protocol</a>.</p>
+
+  <h2>Released: v0.5.3</h2>
   <p>v0.5 adds named local MCP tools: save a reviewed semantic workflow, discover its exact input/result schema, call it with new values, and get fresh declared output. A wrong scope, drift, missing record, or ambiguous target is a refusal—not a hidden agent run.</p>
-  <p><a href="release-v0.5.0.md">Feature release guide</a> · <a href="release-v0.5.2.md">CI patch notes</a> · <a href="https://github.com/ixchio/terx/releases/tag/v0.5.2">GitHub release</a> · <a href="https://pypi.org/project/terx/0.5.2/">PyPI package</a></p>
+  <p><a href="release-v0.5.0.md">Feature release guide</a> · <a href="release-v0.5.3.md">CI patch notes</a> · <a href="https://github.com/ixchio/terx/releases/tag/v0.5.3">GitHub release</a> · <a href="https://pypi.org/project/terx/0.5.3/">PyPI package</a></p>
 
   <h2>Verify</h2>
   <pre>pip install terx

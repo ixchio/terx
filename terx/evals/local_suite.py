@@ -132,30 +132,35 @@ async def run_suite(capture_dir: Path | None = None) -> dict[str, Any]:
     server = _start_server(http_port)
     user_data_dir = tempfile.TemporaryDirectory()
     cache_dir = tempfile.TemporaryDirectory()
-    chrome = subprocess.Popen(
-        [
-            _chrome_binary(),
-            "--headless=new",
-            f"--remote-debugging-port={cdp_port}",
-            f"--user-data-dir={user_data_dir.name}",
-            "--disable-gpu",
-            "--no-sandbox",
-            "about:blank",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    await asyncio.sleep(1.5)
-
-    cache = MemoryCache(
-        db_path=Path(cache_dir.name) / "cache.db",
-        audit_dir=Path(cache_dir.name) / "audit",
-    )
-    # A deliberate server-side delay exercises the CDP load wait without
-    # pretending it is a production-site benchmark.
-    base_url = f"http://127.0.0.1:{http_port}/slow"
-
+    chrome: subprocess.Popen[str] | None = None
     try:
+        chrome = subprocess.Popen(
+            [
+                _chrome_binary(),
+                "--headless=new",
+                "--remote-debugging-address=127.0.0.1",
+                f"--remote-debugging-port={cdp_port}",
+                f"--user-data-dir={user_data_dir.name}",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-sandbox",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        await _wait_for_chrome_debugger(chrome, cdp_port)
+
+        cache = MemoryCache(
+            db_path=Path(cache_dir.name) / "cache.db",
+            audit_dir=Path(cache_dir.name) / "audit",
+        )
+        # A deliberate server-side delay exercises the CDP load wait without
+        # pretending it is a production-site benchmark.
+        base_url = f"http://127.0.0.1:{http_port}/slow"
+
         async with BrowserSession(port=cdp_port) as session:
             bridge = session.bridge()
             results = [
@@ -196,11 +201,15 @@ async def run_suite(capture_dir: Path | None = None) -> dict[str, Any]:
             ]
         results.append(await _run_saved_tool_case(cache, base_url, cdp_port, capture_dir))
     finally:
-        chrome.terminate()
-        try:
-            chrome.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            chrome.kill()
+        if chrome is not None:
+            if chrome.poll() is None:
+                chrome.terminate()
+                try:
+                    chrome.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    chrome.kill()
+            if chrome.stderr is not None:
+                chrome.stderr.close()
         server.shutdown()
         user_data_dir.cleanup()
         cache_dir.cleanup()
@@ -539,6 +548,34 @@ def _start_server(port: int) -> HTTPServer:
     server = HTTPServer(("127.0.0.1", port), EvalHandler)
     Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+async def _wait_for_chrome_debugger(
+    chrome: subprocess.Popen[str], port: int, *, timeout_seconds: float = 10.0
+) -> None:
+    """Wait for Chrome's loopback CDP listener and keep early-exit diagnostics."""
+    deadline = time.monotonic() + timeout_seconds
+    last_error = "no connection attempt made"
+    while time.monotonic() < deadline:
+        if chrome.poll() is not None:
+            stderr = chrome.stderr.read() if chrome.stderr is not None else ""
+            detail = stderr.strip()[-2_000:] or "no Chrome stderr was produced"
+            raise RuntimeError(
+                f"Chrome exited before CDP was ready (exit {chrome.returncode}): {detail}"
+            )
+        try:
+            _, writer = await asyncio.open_connection("127.0.0.1", port)
+        except OSError as error:
+            last_error = str(error)
+            await asyncio.sleep(0.1)
+            continue
+        writer.close()
+        await writer.wait_closed()
+        return
+    raise RuntimeError(
+        f"Chrome did not expose CDP on 127.0.0.1:{port} within {timeout_seconds:.1f}s "
+        f"({last_error})"
+    )
 
 
 def _free_port() -> int:
