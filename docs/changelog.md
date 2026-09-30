@@ -4,7 +4,7 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
-## [0.5.1] - 2026-10-01
+## [0.5.2] - 2026-10-01
 
 ### Fixed
 
@@ -12,6 +12,9 @@ All notable changes to the TERX browser memory layer are documented in this file
   project rule set, so an unreviewed linter upgrade cannot fail a release with
   new default rules. Reformatted the remaining source files under that rule
   set.
+- Pinned the MCP dependency to the compatible 1.x API. MCP 2.x removes the
+  `FastMCP` server API used by TERX, so the prior unbounded dependency made CI
+  install an incompatible runtime.
 
 ---
 

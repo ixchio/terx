@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "terx"
-version = "0.5.1"
+version = "0.5.2"
 description = "Local policy-enforced replay for approved browser-agent workflows."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "websockets>=13.0",
     "aiohttp>=3.9",
-    "mcp>=1.0",
+    "mcp>=1.0,<2",
     "mmh3>=4.0",
 ]
 
