@@ -1,4 +1,5 @@
-# TERX
+# TERX [![M8ven Score](https://m8ven.ai/badge/mcp/ixchio-terx-izqucs)](https://m8ven.ai/mcp/ixchio-terx-izqucs?s=readme)
+
 
 **Local, policy-enforced replay for approved browser-agent workflows.**
 
