@@ -16,7 +16,10 @@ Do not open a public issue. Use
 or the maintainer address in PyPI metadata. Include impact, a minimal
 reproduction, and suggested remediation if available.
 
-## v0.4 trust boundary
+## Trust boundary
+
+The full threat model, including residual risks, is in
+[docs/threat-model.md](docs/threat-model.md).
 
 TERX connects to a Chrome instance exposed through a local CDP WebSocket. CDP
 has the authority of that browser profile. Use a dedicated profile for browser
