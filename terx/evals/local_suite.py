@@ -17,7 +17,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from terx.cache.cache import ApprovalDecision, MemoryCache, session_for
+from terx.cache import ApprovalDecision, MemoryCache, session_for
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 from terx.integrations.workflow import TerxWorkflow

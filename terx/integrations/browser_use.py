@@ -12,7 +12,7 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
-from terx.cache.cache import (
+from terx.cache import (
     ApprovalVerifier,
     MemoryCache,
     ReplayCostLedger,

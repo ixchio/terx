@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
 
-from terx.cache.cache import MemoryCache, session_for
+from terx.cache import MemoryCache, session_for
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 

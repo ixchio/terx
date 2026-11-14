@@ -15,19 +15,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from terx.cache.cache import (
-    ApprovalVerifier,
-    CDPCommand,
-    MemoryCache,
-    ReplayCostLedger,
-    ReplayReport,
-    ReplayRefused,
-    RecordingContext,
-    _assert_postcondition,
-    _is_replayable_url,
-    replace_field_text,
-    session_for,
-)
+from terx.cache.actions import click_element, replace_field_text
+from terx.cache.conditions import _assert_postcondition
+from terx.cache.errors import ReplayRefused
+from terx.cache.models import CDPCommand, ReplayCostLedger, ReplayReport
+from terx.cache.policy import ApprovalVerifier, _is_replayable_url
+from terx.cache.recording import RecordingContext, session_for
+from terx.cache.storage import MemoryCache
 from terx.cdp.bridge import CDPBridge
 from terx.dom.extractor import AXElement, DOMExtractor, DOMSnapshot
 from terx.tools import call_result_reader
@@ -91,19 +85,7 @@ class TerxActions:
         """Click exactly one accessible element identified by role and label."""
         element = await self._element(role, label)
         started = time.perf_counter()
-        resolved = await self._bridge.send_internal(
-            "DOM.resolveNode", {"backendNodeId": element.backend_dom_id}
-        )
-        object_id = resolved.get("object", {}).get("objectId")
-        if not isinstance(object_id, str) or not object_id:
-            raise ReplayRefused("could not resolve semantic click target")
-        await self._bridge.send_internal(
-            "Runtime.callFunctionOn",
-            {
-                "objectId": object_id,
-                "functionDeclaration": "function() { this.click(); }",
-            },
-        )
+        await click_element(self._bridge, element.backend_dom_id)
         # A click can alter the current page without a navigation event.
         self._snapshot = None
         self._context.record_command(

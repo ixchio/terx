@@ -25,15 +25,11 @@ try:
 except ImportError:
     raise ImportError("mcp is required for the TERX server. Install with: pip install mcp")
 
-from terx.cache.cache import (
-    ApprovalVerifier,
-    MemoryCache,
-    RecordingContext,
-    ReplayPolicy,
-    ReplayRefused,
-    replace_field_text,
-    session_for,
-)
+from terx.cache.actions import click_element, replace_field_text
+from terx.cache.errors import ReplayRefused
+from terx.cache.policy import ApprovalVerifier, ReplayPolicy
+from terx.cache.recording import RecordingContext, session_for
+from terx.cache.storage import MemoryCache
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 from terx.tools import (
@@ -687,26 +683,15 @@ class TERXServer:
                     "error": f"Element {element_id} not found. Call browser_get_state to refresh.",
                 }
 
-            # Resolve the element and click it through the node handle. Recording
-            # DOM.resolveNode lets TERX remap fresh backendNodeIds on replay.
+            # Click through the node handle with recorded calls, so the
+            # recorder maps it to a labelled element and replays it on a fresh
+            # page by role and name rather than by backendNodeId.
             try:
-                resolve_result = await bridge.send(
-                    "DOM.resolveNode", {"backendNodeId": el.backend_dom_id}
-                )
+                await click_element(bridge, el.backend_dom_id, record=True)
+            except ReplayRefused:
+                return {"success": False, "error": "Element did not resolve to a JS object"}
             except Exception as exc:
                 return {"success": False, "error": f"Cannot resolve element: {exc}"}
-
-            object_id = resolve_result.get("object", {}).get("objectId")
-            if not object_id:
-                return {"success": False, "error": "Element did not resolve to a JS object"}
-
-            await bridge.send(
-                "Runtime.callFunctionOn",
-                {
-                    "objectId": object_id,
-                    "functionDeclaration": "function() { this.click(); }",
-                },
-            )
 
             await asyncio.sleep(0.3)
             return {

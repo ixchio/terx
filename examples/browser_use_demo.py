@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from terx.cache.cache import MemoryCache
+from terx.cache import MemoryCache
 from terx.cdp.session import BrowserSession
 from terx.integrations.browser_use import wrap_browser_use
 
