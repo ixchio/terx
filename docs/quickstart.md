@@ -1,6 +1,6 @@
 # Quick start
 
-TERX v0.5 caches only explicit, policy-bound semantic workflows. Before using
+TERX caches only explicit, policy-bound semantic workflows. Before using
 it, decide what caller scope can run the workflow, what page state proves it is
 safe to start, and what outcome proves success.
 

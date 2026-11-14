@@ -223,7 +223,7 @@ On a warm hit, `sign_in` is never called. Direct mutating bridge calls are
 intentionally excluded: use the adapter's semantic actions or TERX refuses to
 call it a replayable workflow. See [integration guidance](https://github.com/ixchio/terx/blob/main/docs/integrations.md).
 
-## v0.5: save a task as a tool
+## Save a task as a tool
 
 The MCP server can persist a reviewed workflow as a named, discoverable tool.
 The manifest contains the task contract, input names, result schema, and a
@@ -294,7 +294,8 @@ full boundary and reporting policy.
 ## Supported integration surface
 
 Python, the dependency-free workflow adapter, saved MCP tools, and the built-in
-MCP server are supported in v0.5. The Browser Use adapter is experimental: it can only record
+MCP server are supported in 1.0, under the [versioning policy](docs/versioning.md). The
+Browser Use adapter is experimental: it can only record
 agents that intentionally drive the TERX CDP bridge supplied to it. A normal
 Browser Use session is not a drop-in capture source.
 

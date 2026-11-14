@@ -2,16 +2,16 @@
 
 The large speedup and token-saving tables published for TERX v0.3 measured a
 different product: raw CDP command replay against a local benchmark page. They
-are retained in Git history for provenance but are **not v0.5 performance
+are retained in Git history for provenance but are **not current performance
 claims** and must not be used to compare this release with other tools.
 
-v0.5 adds named tool manifests and fresh result reads, on top of mandatory
+Since v0.5, TERX has named tool manifests and fresh result reads, on top of mandatory
 scope, precondition, postcondition, target uniqueness, expiry, and
 destructive-action checks. It also refuses raw mouse, keyboard, and JavaScript
 command streams. These protections change both the supported workload and its
 timing, so the prior benchmark runner is no longer exposed as a package command.
 
-## What v0.5 verifies now
+## What `terx eval-local` verifies
 
 ```bash
 terx eval-local
@@ -98,7 +98,7 @@ task, not a configuration snippet or a one-off Cloud smoke. Stagehand's hosted
 cache path still needs a Browserbase account and an authorized target before a
 real Stagehand cost record can be published.
 
-## Hard eval (1.0)
+## Hard eval (1.0.0)
 
 `terx eval-hard` runs 15 scenarios against a local site in headless Chrome.
 Each one records a workflow on one page variant and replays it, with new
@@ -106,7 +106,7 @@ variable values, against a second variant. The harness then checks the page's
 actual result itself, independently of TERX's report, so a replay that reports
 success but did the wrong thing is counted as unsafe.
 
-| Metric | Before (v0.5.3 + #1/#2) | After (this release) |
+| Metric | v0.5.3 with #1 and #2 | 1.0.0 |
 | --- | :---: | :---: |
 | Scenarios | 12 | 15 (3 new must-refuse cases) |
 | Recordable at all | 8 / 12 | 15 / 15 |

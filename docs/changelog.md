@@ -6,6 +6,14 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-14
+
+TERX 1.0 commits to a stable public API under
+[semantic versioning](versioning.md). It adds three replay actions, URL
+templates, same-origin iframes, and multi-signal targets, hardens replay and
+the MCP server, and removes experimental code. See the
+[release notes](release-v1.0.0.md) for upgrade steps.
+
 ### Added
 
 - Three replayable actions: `TERX.check` (set a checkbox, switch, or radio on
@@ -78,11 +86,10 @@ All notable changes to the TERX browser memory layer are documented in this file
   `browser_tool_delete` and `cache_invalidate` now require `scope_id`, and
   `cache_invalidate` clears only that scope (`terx purge` still clears a whole
   domain). `browser_tool_run` is refused while a task is recording.
-- End-of-workflow screenshots are no longer written by default. They were saved
-  to `.terx/screenshots/` relative to the working directory, named by page
-  structure (shared across tenants) and could contain page data. Opt in with
-  `MemoryCache(visual_audit=True)`; baselines are then owner-only files under
-  the cache directory, named by the full scoped replay identity.
+- End-of-workflow screenshots are no longer captured. 0.5.x saved one per
+  recorded workflow to `.terx/screenshots/` relative to the working directory,
+  named by page structure (so shared across tenants), and they could contain
+  page data. Delete that folder after upgrading.
 - Removed the undocumented `js` condition, which evaluated arbitrary script on
   the cold path. Unknown condition keys now raise `ValueError`.
 - MCP navigation now blocks `chrome:`, `chrome-extension:`, `devtools:`,

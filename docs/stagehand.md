@@ -1,13 +1,13 @@
 # Stagehand integration status
 
-TERX v0.4 does not ship a Stagehand adapter. Do not describe TERX as recording
+TERX does not ship a Stagehand adapter. Do not describe TERX as recording
 arbitrary Stagehand `act`, `extract`, or `agent` workflows: those calls do not
 automatically traverse the TERX CDP bridge and may use unsupported browser
 gestures.
 
 An experimental integration can use the TERX MCP server only when the workflow
 is explicitly driven through its `browser_*` tools and satisfies the normal
-v0.4 contract:
+replay contract:
 
 ```json
 {
