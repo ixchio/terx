@@ -31,8 +31,10 @@ from terx.cache.cache import (
 )
 
 
-def _semantic_click(label: str = "Login") -> CDPCommand:
-    return CDPCommand("TERX.click", {"target": {"role": "button", "label": label}}, {}, 1.0)
+def _semantic_click(label: str = "Login", **target: object) -> CDPCommand:
+    return CDPCommand(
+        "TERX.click", {"target": {"role": "button", "label": label, **target}}, {}, 1.0
+    )
 
 
 TEST_SCOPE = "tenant-a"
@@ -681,9 +683,13 @@ async def test_recording_redacts_and_parameterizes_inputs(monkeypatch):
         assert hit is not None
 
         params = [command.params for command in hit.commands]
-        assert {"target": {"role": "textbox", "label": "Email"}, "text": "{{email}}"} in params
+        # Targets carry the element's position among same-role elements too.
         assert {
-            "target": {"role": "textbox", "label": "Password"},
+            "target": {"role": "textbox", "label": "Email", "ordinal": 0},
+            "text": "{{email}}",
+        } in params
+        assert {
+            "target": {"role": "textbox", "label": "Password", "ordinal": 0},
             "text": "{{password}}",
         } in params
         assert "super-secret" not in json.dumps([command.__dict__ for command in hit.commands])
@@ -1310,7 +1316,7 @@ async def test_destructive_replay_requires_per_hit_approval(monkeypatch):
             )
 
         consumed_tokens: set[str] = set()
-        expected_commands = [_semantic_click("Login")]
+        expected_commands = [_semantic_click("Login", ordinal=0)]
 
         def consume_approval(request):
             assert request.task_description == "approve"
@@ -2521,3 +2527,366 @@ async def test_concurrent_mcp_task_starts_cannot_both_enter(monkeypatch):
         assert outcomes == [False, True]
         refused = first if not first.get("recording") else second
         assert refused["refused"] is True
+
+
+# ------------------------------------------------------------------ #
+# 1.0 actions: URL templates, new actions, multi-signal locators       #
+# ------------------------------------------------------------------ #
+
+
+class ActionBridge(FakeBridge):
+    """FakeBridge that answers the CDP calls behind TERX's element actions."""
+
+    def __init__(self, snapshot=None, test_ids=None, **kwargs):
+        super().__init__(snapshot=snapshot, **kwargs)
+        self.test_ids = dict(test_ids or {})
+        self.navigations: list[str] = []
+        self.calls: list[tuple[str, dict]] = []
+
+    async def send_internal(self, method, params=None):
+        params = params or {}
+        self.calls.append((method, params))
+        if method == "Page.navigate":
+            self.navigations.append(params["url"])
+            return {}
+        if method == "DOM.describeNode":
+            test_id = self.test_ids.get(params["backendNodeId"])
+            attributes = ["class", "x"] + (["data-testid", test_id] if test_id else [])
+            return {"node": {"attributes": attributes}}
+        if method == "Runtime.callFunctionOn":
+            declaration = params.get("functionDeclaration", "")
+            if "wanted" in declaration or "HTMLSelectElement" in declaration:
+                self.sent.append((method, params))
+                return {"result": {"value": "ok"}}
+        return await super().send_internal(method, params)
+
+
+def _element(role, name, backend, *, ordinal=0, frame=""):
+    return AXElement(
+        id=backend,
+        role=role,
+        semantic_name=name,
+        current_value="",
+        node_id=str(backend),
+        backend_dom_id=backend,
+        depth=1,
+        frame=frame,
+        ordinal=ordinal,
+    )
+
+
+def _page(*elements, url="https://example.com/login"):
+    role_sequence = _build_role_sequence([e for e in elements if not e.frame])
+    return DOMSnapshot(
+        url=url,
+        title="Login",
+        elements=list(elements),
+        structural_hash=_structural_hash(role_sequence),
+        role_sequence=role_sequence,
+    )
+
+
+def test_url_templates_replace_whole_segments_equal_to_variables():
+    from terx.cache.redaction import _interpolate_url, _templatize_url
+
+    template, problems = _templatize_url(
+        "https://shop.test/orders/A-100/items", {"order_id": "A-100"}
+    )
+    assert template == "https://shop.test/orders/{{order_id}}/items" and problems == []
+    # Short values collide with ordinary segments, so they are left alone.
+    assert _templatize_url("https://shop.test/page/1", {"n": "1"})[0].endswith("/page/1")
+    # Percent-encoded segments match their decoded variable value.
+    assert _templatize_url("https://x.test/u/ada%20l", {"user": "ada l"})[0].endswith("/u/{{user}}")
+    # A segment matching two variables is ambiguous and is not guessed.
+    _, problems = _templatize_url("https://x.test/a/same", {"a": "same", "b": "same"})
+    assert problems and "more than one variable" in problems[0]
+    # Values are encoded as a single segment: no path or host injection.
+    assert _interpolate_url("https://x.test/o/{{id}}", {"id": "../admin/x"}) == (
+        "https://x.test/o/..%2Fadmin%2Fx"
+    )
+
+
+def test_placeholders_are_never_replayable_in_the_host():
+    from terx.cache.policy import _is_replayable_url
+
+    assert _is_replayable_url("https://shop.test/orders/{{order_id}}")
+    assert not _is_replayable_url("https://{{host}}/orders")
+    assert not _is_replayable_url("https://shop.{{tld}}/orders")
+
+
+@pytest.mark.asyncio
+async def test_recorded_navigation_replays_with_the_new_variable(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        recorder = ActionBridge()
+        async with session_for(
+            cache, recorder, "open order", variables={"order_id": "A-100"}, **_replay_options()
+        ):
+            await recorder.send("Page.navigate", {"url": "https://example.com/orders/A-100"})
+        stored = _scoped_lookup(cache, recorder.snapshot, "open order")
+        assert stored.commands[0].params == {"url": "https://example.com/orders/{{order_id}}"}
+
+        replayer = ActionBridge()
+        async with session_for(
+            cache, replayer, "open order", variables={"order_id": "B-200"}, **_replay_options()
+        ) as ctx:
+            await ctx.replay()
+        assert replayer.navigations == ["https://example.com/orders/B-200"]
+
+        missing = ActionBridge()
+        async with session_for(cache, missing, "open order", **_replay_options()) as ctx:
+            with pytest.raises(ReplayRefused, match="missing replay variable: order_id"):
+                await ctx.replay()
+        assert missing.navigations == []
+
+
+def test_validate_action_defines_the_persisted_format():
+    from terx.cache.policy import validate_action
+
+    target = {"role": "checkbox", "label": "Updates", "ordinal": 0}
+    validate_action("TERX.check", {"target": target, "checked": True})
+    validate_action("TERX.select", {"target": target, "option": "{{country}}"})
+    validate_action("TERX.press", {"target": target, "key": "Enter"})
+    for method, params in [
+        ("TERX.check", {"target": target, "checked": "yes"}),
+        ("TERX.select", {"target": target, "option": ""}),
+        ("TERX.press", {"target": target, "key": "a"}),
+        ("TERX.press", {"target": target, "key": "Control+w"}),
+        ("TERX.click", {"target": {**target, "ordinal": True}}),
+        ("TERX.click", {"target": {**target, "test_id": ""}}),
+        ("TERX.type", {"target": target, "text": "literal secret"}),
+        ("TERX.eval", {"target": target}),
+    ]:
+        with pytest.raises(ValueError):
+            validate_action(method, params)
+
+
+@pytest.mark.asyncio
+async def test_locator_accepts_a_label_change_only_when_test_id_and_position_agree():
+    from terx.cache.actions import _locate_target
+
+    target = {"role": "button", "label": "Sign up", "ordinal": 1, "test_id": "signup"}
+    translated = _page(_element("button", "Help", 1), _element("button", "Register", 2, ordinal=1))
+    bridge = ActionBridge(test_ids={2: "signup"})
+    element, note = await _locate_target(bridge, translated, target)
+    assert element.backend_dom_id == 2
+    assert "Register" in note
+
+    moved = _page(
+        _element("button", "Help", 1),
+        _element("button", "Learn more", 3, ordinal=1),
+        _element("button", "Register", 2, ordinal=2),
+    )
+    with pytest.raises(ReplayRefused, match="different position"):
+        await _locate_target(bridge, moved, target)
+
+    no_test_id = {"role": "button", "label": "Sign up", "ordinal": 1}
+    with pytest.raises(ReplayRefused, match="missing"):
+        await _locate_target(bridge, translated, no_test_id)
+
+
+@pytest.mark.asyncio
+async def test_locator_refuses_when_label_and_test_id_disagree():
+    from terx.cache.actions import _locate_target
+
+    page = _page(_element("button", "Archive", 1), _element("button", "Delete", 2, ordinal=1))
+    target = {"role": "button", "label": "Archive", "ordinal": 0, "test_id": "archive"}
+    swapped = ActionBridge(test_ids={1: "delete", 2: "archive"})
+    with pytest.raises(ReplayRefused, match="signals disagree"):
+        await _locate_target(swapped, page, target)
+    # A removed test id is not a conflict: the label still identifies it.
+    removed = ActionBridge(test_ids={})
+    element, note = await _locate_target(removed, page, target)
+    assert element.backend_dom_id == 1 and note is None
+
+
+@pytest.mark.asyncio
+async def test_locator_keeps_legacy_targets_and_scopes_by_frame():
+    from terx.cache.actions import _locate_target
+
+    page = _page(
+        _element("textbox", "Coupon code", 1),
+        _element("textbox", "Coupon code", 2, frame="Checkout"),
+    )
+    bridge = ActionBridge()
+    legacy = {"role": "textbox", "label": "Coupon code"}
+    assert (await _locate_target(bridge, page, legacy))[0].backend_dom_id == 1
+    framed = {"role": "textbox", "label": "Coupon code", "frame": "Checkout"}
+    assert (await _locate_target(bridge, page, framed))[0].backend_dom_id == 2
+    duplicate = _page(_element("button", "Go", 1), _element("button", "Go", 2, ordinal=1))
+    with pytest.raises(ReplayRefused, match="ambiguous"):
+        await _locate_target(bridge, duplicate, {"role": "button", "label": "Go"})
+
+
+@pytest.mark.asyncio
+async def test_element_actions_pass_values_as_arguments_not_script():
+    from terx.cache.actions import press_key_element, select_option_element, set_checked_element
+
+    bridge = ActionBridge()
+    await set_checked_element(bridge, 7, True)
+    await select_option_element(bridge, 7, "'); alert(1); ('")
+    calls = [params for method, params in bridge.calls if method == "Runtime.callFunctionOn"]
+    assert calls[0]["arguments"] == [{"value": True}]
+    assert calls[1]["arguments"] == [{"value": "'); alert(1); ('"}]
+    assert "alert" not in calls[1]["functionDeclaration"]
+
+    await press_key_element(bridge, 7, "Enter")
+    keys = [params for method, params in bridge.calls if method == "Input.dispatchKeyEvent"]
+    assert keys[0]["type"] == "keyDown" and keys[0]["text"] == "\r"
+    assert keys[1]["type"] == "keyUp" and "text" not in keys[1]
+    with pytest.raises(ReplayRefused):
+        await press_key_element(bridge, 7, "F5")
+
+
+@pytest.mark.asyncio
+async def test_set_checked_refuses_when_the_state_cannot_be_set():
+    from terx.cache.actions import set_checked_element
+
+    class StubbornBridge(ActionBridge):
+        async def send_internal(self, method, params=None):
+            if method == "Runtime.callFunctionOn" and "wanted" in (params or {}).get(
+                "functionDeclaration", ""
+            ):
+                return {"result": {"value": "unchanged"}}
+            return await super().send_internal(method, params)
+
+    with pytest.raises(ReplayRefused, match="unchanged"):
+        await set_checked_element(StubbornBridge(), 7, True)
+
+
+@pytest.mark.asyncio
+async def test_drifted_replay_reports_a_locator_note(monkeypatch):
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        cold = _page(_element("button", "Help", 1), _element("button", "Sign up", 2, ordinal=1))
+        command = _semantic_click("Sign up", ordinal=1, test_id="signup")
+        _seed_sequence(cache, cold, "sign up", [command])
+        warm = _page(_element("button", "Help", 1), _element("button", "Register", 2, ordinal=1))
+        # Same structure apart from one label: still recognised as the page.
+        bridge = ActionBridge(snapshot=warm, test_ids={2: "signup"})
+        bridge.snapshot = DOMSnapshot(
+            url=warm.url,
+            title=warm.title,
+            elements=warm.elements,
+            structural_hash=cold.structural_hash,
+            role_sequence=cold.role_sequence,
+        )
+        async with session_for(cache, bridge, "sign up", **_replay_options()) as ctx:
+            await ctx.replay()
+        assert ctx.report.status == "hit"
+        assert len(ctx.report.locator_notes) == 1
+        assert "Register" in ctx.report.locator_notes[0]
+
+
+@pytest.mark.asyncio
+async def test_extractor_reads_same_process_iframes_without_changing_page_identity():
+    class FrameBridge:
+        async def send_internal(self, method, params=None):
+            params = params or {}
+            if method == "Runtime.evaluate":
+                return {"result": {"value": "https://example.com/checkout"}}
+            if method == "Accessibility.getFullAXTree" and "frameId" not in params:
+                return {
+                    "nodes": [
+                        {
+                            "role": {"value": "button"},
+                            "name": {"value": "Pay"},
+                            "nodeId": "1",
+                            "backendDOMNodeId": 10,
+                        },
+                        {
+                            "role": {"value": "Iframe"},
+                            "name": {"value": "Checkout"},
+                            "nodeId": "2",
+                            "backendDOMNodeId": 11,
+                        },
+                    ]
+                }
+            if method == "Accessibility.getFullAXTree":
+                return {
+                    "nodes": [
+                        {
+                            "role": {"value": "textbox"},
+                            "name": {"value": "Coupon code"},
+                            "nodeId": "1",
+                            "backendDOMNodeId": 20,
+                        },
+                        {
+                            "role": {"value": "button"},
+                            "name": {"value": "Apply"},
+                            "nodeId": "2",
+                            "backendDOMNodeId": 21,
+                        },
+                    ]
+                }
+            if method == "Page.getFrameTree":
+                return {
+                    "frameTree": {
+                        "frame": {"id": "main"},
+                        "childFrames": [{"frame": {"id": "child"}}],
+                    }
+                }
+            if method == "DOM.getFrameOwner":
+                return {"backendNodeId": 11}
+            return {}
+
+    snapshot = await DOMExtractor().snapshot(FrameBridge())
+    by_name = {el.semantic_name: el for el in snapshot.elements}
+    assert by_name["Coupon code"].frame == "Checkout"
+    assert by_name["Apply"].frame == "Checkout" and by_name["Apply"].ordinal == 0
+    assert by_name["Pay"].frame == "" and by_name["Pay"].ordinal == 0
+    assert "Coupon" not in snapshot.role_sequence  # page identity is main-frame only
+
+
+class _McpSession:
+    def __init__(self, bridge):
+        self._bridge = bridge
+
+    def bridge(self):
+        return self._bridge
+
+
+@pytest.mark.asyncio
+async def test_mcp_recording_follows_the_agent_across_pages(monkeypatch):
+    from terx.server.mcp import TERXServer
+
+    async def fake_snapshot(self, bridge):
+        return bridge.snapshot
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        server = TERXServer(cache=cache)
+        bridge = ActionBridge()
+        server._session = _McpSession(bridge)
+        start = _mcp_tool(server, "browser_task_start")
+        finish = _mcp_tool(server, "browser_task_finish")
+        click = _mcp_tool(server, "browser_click")
+        set_checked = _mcp_tool(server, "browser_set_checked")
+
+        started = await start(
+            task="two page flow",
+            scope_id=TEST_SCOPE,
+            precondition=TEST_PRECONDITION,
+            postcondition=TEST_POSTCONDITION,
+        )
+        assert started["recording"] is True
+        # The agent moves to a second page whose elements are new nodes.
+        bridge.snapshot = _page(
+            _element("button", "Continue", 501), _element("checkbox", "Remember me", 502)
+        )
+        assert (await click(element_id=501))["success"] is True
+        assert (await set_checked(element_id=502, checked=True))["success"] is True
+        finished = await finish(success=True)
+        assert finished["cached"] is True, finished
+        stored = cache._ensure_db().execute("SELECT commands_json FROM sequences").fetchone()[0]
+        methods = [command["method"] for command in json.loads(stored)]
+        assert methods == ["TERX.click", "TERX.check"]

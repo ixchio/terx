@@ -94,6 +94,9 @@ class ReplayReport:
     scope_verified: bool = False
     preconditions_verified: bool = False
     postconditions_verified: bool = False
+    # Targets found by a fallback signal (for example a test id after a label
+    # change). Operators should review these: the page has drifted.
+    locator_notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

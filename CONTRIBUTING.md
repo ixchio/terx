@@ -65,6 +65,10 @@ run the local semantic replay suite:
 terx eval-local
 ```
 
+Release checklist: run `terx eval-hard` on the release commit and paste its
+`summary` (replay rate, false refusal rate, unsafe outcomes) into the release
+notes and `docs/benchmarks.md`. A release with any unsafe outcome does not ship.
+
 The v0.3 raw-CDP benchmark runners were removed in 1.0 (their source remains
 at the `v0.5.3` tag) and must not be used as performance claims. A new
 benchmark needs the methodology described in `docs/benchmarks.md`.

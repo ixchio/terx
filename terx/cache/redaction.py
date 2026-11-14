@@ -8,16 +8,15 @@ import logging
 import os
 import re
 from typing import Any
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from terx.cache.errors import MissingReplayVariable
-from terx.cache.policy import REPLAY_ACTIONS, _is_replayable_url
+from terx.cache.policy import PLACEHOLDER_RE as PLACEHOLDER_RE
+from terx.cache.policy import REPLAY_ACTIONS, validate_action
 from terx.cache.models import CDPCommand
 
 
 logger = logging.getLogger(__name__)
-
-
-PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
 
 
 SENSITIVE_LABEL_PARTS = (
@@ -60,21 +59,7 @@ def _sanitize_command_for_storage(command: CDPCommand) -> dict[str, Any]:
     """Serialize only replayable semantic actions with no response payloads."""
     if command.method not in REPLAY_ACTIONS:
         raise ValueError(f"TERX only persists semantic replay actions, got {command.method}")
-    if command.method == "TERX.navigate":
-        if not isinstance(command.params.get("url"), str) or not _is_replayable_url(
-            command.params["url"]
-        ):
-            raise ValueError("TERX.navigate requires an http or https URL")
-    else:
-        target = command.params.get("target")
-        if not isinstance(target, dict) or not all(
-            isinstance(target.get(field), str) and target[field] for field in ("role", "label")
-        ):
-            raise ValueError(f"{command.method} requires a labelled semantic target")
-        if command.method == "TERX.type":
-            text = command.params.get("text")
-            if not isinstance(text, str) or PLACEHOLDER_RE.fullmatch(text) is None:
-                raise ValueError("TERX.type requires a named variable placeholder")
+    validate_action(command.method, command.params)
     metadata = {
         key: value
         for key, value in _sanitize_value(command.metadata).items()
@@ -219,6 +204,51 @@ def _redacted_fields_in_commands(commands: list[CDPCommand]) -> list[str]:
         match = PLACEHOLDER_RE.fullmatch(placeholder)
         fields.add(match.group(1) if match else placeholder)
     return sorted(fields)
+
+
+# Short values such as "1" or "en" collide with ordinary path segments, so
+# only longer values are turned into URL placeholders automatically. An
+# explicit ``{{name}}`` in a URL always works.
+_MIN_AUTO_URL_VALUE_LENGTH = 3
+
+
+def _templatize_url(url: str, variables: dict[str, Any]) -> tuple[str, list[str]]:
+    """Replace whole path segments equal to a variable value with placeholders.
+
+    Returns the URL template and any problems that make it unsafe to replay.
+    A segment matching two variables is ambiguous and is not guessed.
+    """
+    parsed = urlparse(url)
+    segments = parsed.path.split("/")
+    problems: list[str] = []
+    for index, segment in enumerate(segments):
+        if not segment or PLACEHOLDER_RE.fullmatch(segment):
+            continue
+        decoded = unquote(segment)
+        names = [
+            name
+            for name, value in variables.items()
+            if len(str(value)) >= _MIN_AUTO_URL_VALUE_LENGTH and decoded == str(value)
+        ]
+        if len(names) > 1:
+            problems.append(
+                "a URL path segment matches more than one variable: " + ", ".join(sorted(names))
+            )
+        elif names:
+            segments[index] = f"{{{{{names[0]}}}}}"
+    return urlunparse(parsed._replace(path="/".join(segments))), problems
+
+
+def _interpolate_url(template: str, variables: dict[str, Any]) -> str:
+    """Fill URL path placeholders, percent-encoding each value as one segment."""
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise MissingReplayVariable(name)
+        return quote(str(variables[name]), safe="")
+
+    return PLACEHOLDER_RE.sub(replace, template)
 
 
 def _interpolate_placeholders(value: str, variables: dict[str, Any]) -> str:

@@ -137,8 +137,8 @@ async def run_suite(capture_dir: Path | None = None) -> dict[str, Any]:
     http_port = _free_port()
     cdp_port = _free_port()
     server = _start_server(http_port)
-    user_data_dir = tempfile.TemporaryDirectory()
-    cache_dir = tempfile.TemporaryDirectory()
+    user_data_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    cache_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     chrome: subprocess.Popen[str] | None = None
     try:
         chrome = subprocess.Popen(

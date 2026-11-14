@@ -37,9 +37,21 @@ translates this narrow sequence into a persisted action IR:
 
 | Source CDP gesture | Persisted action |
 | --- | --- |
-| `Page.navigate` to query-free `http` or `https` | `TERX.navigate` |
+| `Page.navigate` to query-free `http` or `https` | `TERX.navigate` (path segments equal to a variable become `{{placeholders}}`) |
 | `DOM.resolveNode` plus exact `this.click()` | `TERX.click` |
 | labelled `DOM.focus` plus `Input.insertText` | `TERX.type` |
+
+`TERX.check`, `TERX.select`, and `TERX.press` are never inferred from raw CDP.
+They are recorded only through the workflow adapter (`set_checked`,
+`select_option`, `press`) or the matching MCP tools, which execute them with
+fixed TERX-owned functions that take values as CDP call arguments.
+`terx.cache.policy.validate_action` is the single definition of every
+persisted action's parameters; storage and replay preflight both call it.
+
+Before acting on any page the MCP server passes a fresh snapshot to the
+recorder (`RecordingContext.observe_snapshot`), so targets on pages after the
+first navigation are identified. The starting snapshot, which identifies the
+cached page, never changes.
 
 Any raw mouse/keyboard event, coordinate click, or arbitrary
 `Runtime.evaluate`/`Runtime.callFunctionOn` marks the cold run non-cacheable.

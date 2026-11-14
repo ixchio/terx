@@ -15,11 +15,25 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from terx.cache.actions import click_element, replace_field_text
+from terx.cache.actions import (
+    click_element,
+    describe_target,
+    press_key_element,
+    replace_field_text,
+    select_option_element,
+    set_checked_element,
+)
 from terx.cache.conditions import _assert_postcondition
 from terx.cache.errors import ReplayRefused
 from terx.cache.models import CDPCommand, ReplayCostLedger, ReplayReport
-from terx.cache.policy import ApprovalVerifier, SideEffect, _is_replayable_url
+from terx.cache.policy import (
+    PLACEHOLDER_RE,
+    PRESS_KEYS,
+    ApprovalVerifier,
+    SideEffect,
+    _is_replayable_url,
+)
+from terx.cache.redaction import _interpolate_url, _templatize_url
 from terx.cache.recording import RecordingContext, session_for
 from terx.cache.storage import MemoryCache
 from terx.cdp.bridge import CDPBridge
@@ -48,6 +62,10 @@ class TerxActions:
     Do not mix direct mutating calls on the bridge with this object. TERX can
     prove and replay only this intentionally small surface, which prevents a
     successful cold path from silently becoming a partial or unsafe replay.
+
+    Every element action takes the element's accessible ``role`` and ``label``,
+    and an optional ``frame`` (the iframe path, for example ``"Checkout"``)
+    for elements inside a same-origin iframe.
     """
 
     def __init__(
@@ -63,74 +81,96 @@ class TerxActions:
         self._snapshot: DOMSnapshot | None = None
 
     async def navigate(self, url: str) -> None:
-        """Navigate to a replayable HTTP(S) origin-and-path URL."""
+        """Navigate to a replayable HTTP(S) origin-and-path URL.
+
+        The path may contain ``{{variable}}`` placeholders for declared
+        variables. A path segment that equals a declared variable's value (3
+        characters or longer) is recorded as that placeholder automatically, so
+        ``/orders/A-100`` replays as ``/orders/<new order_id>``.
+        """
         if not isinstance(url, str) or not _is_replayable_url(url):
             raise ValueError(
                 "TERX only records HTTP(S) navigation without query, fragment, or credentials"
             )
+        for name in PLACEHOLDER_RE.findall(url):
+            if name not in self._variables:
+                raise ValueError(f"TERX variable {name!r} was not supplied to this workflow")
+        template, problems = _templatize_url(url, self._variables)
+        if problems:
+            raise ValueError("; ".join(problems))
+        concrete = _interpolate_url(template, self._variables)
         started = time.perf_counter()
-        await self._bridge.send_internal("Page.navigate", {"url": url})
+        await self._bridge.send_internal("Page.navigate", {"url": concrete})
         await self._bridge.wait_for_load(timeout=10.0)
         self._snapshot = None
-        self._context.record_command(
-            CDPCommand(
-                "TERX.navigate",
-                {"url": url},
-                {},
-                (time.perf_counter() - started) * 1000,
-            )
-        )
+        self._record("TERX.navigate", {"url": template}, started)
 
-    async def click(self, role: str, label: str) -> None:
+    async def click(self, role: str, label: str, *, frame: str = "") -> None:
         """Click exactly one accessible element identified by role and label."""
-        element = await self._element(role, label)
+        element, target = await self._target(role, label, frame)
         started = time.perf_counter()
         await click_element(self._bridge, element.backend_dom_id)
         # A click can alter the current page without a navigation event.
         self._snapshot = None
-        self._context.record_command(
-            CDPCommand(
-                "TERX.click",
-                {"target": {"role": element.role, "label": element.semantic_name}},
-                {},
-                (time.perf_counter() - started) * 1000,
-            )
-        )
+        self._record("TERX.click", {"target": target}, started)
 
-    async def type_into(self, role: str, label: str, variable: str) -> None:
-        """Type one declared value into exactly one labelled input.
+    async def type_into(self, role: str, label: str, variable: str, *, frame: str = "") -> None:
+        """Replace one labelled input's value with a declared variable.
 
         ``variable`` must be a lower-snake-case key in the workflow's
         ``variables`` mapping. Its literal value is sent only to Chrome and is
         persisted by TERX only as ``{{variable}}``.
         """
-        if not isinstance(variable, str) or _VARIABLE_NAME.fullmatch(variable) is None:
-            raise ValueError("TERX variable names must be lower-snake-case identifiers")
-        if variable not in self._variables:
-            raise ValueError(f"TERX variable {variable!r} was not supplied to this workflow")
-
-        element = await self._element(role, label)
+        self._require_variable(variable)
+        element, target = await self._target(role, label, frame)
         started = time.perf_counter()
         await replace_field_text(
             self._bridge, element.backend_dom_id, str(self._variables[variable])
         )
         placeholder = f"{{{{{variable}}}}}"
-        self._context.record_command(
-            CDPCommand(
-                "TERX.type",
-                {
-                    "target": {"role": element.role, "label": element.semantic_name},
-                    "text": placeholder,
-                },
-                {},
-                (time.perf_counter() - started) * 1000,
-                {
-                    "redacted": True,
-                    "placeholder": placeholder,
-                    "placeholder_source": "variable",
-                },
-            )
+        self._record(
+            "TERX.type",
+            {"target": target, "text": placeholder},
+            started,
+            {"redacted": True, "placeholder": placeholder, "placeholder_source": "variable"},
         )
+
+    async def set_checked(
+        self, role: str, label: str, checked: bool = True, *, frame: str = ""
+    ) -> None:
+        """Make a checkbox, switch, or radio end checked (or unchecked).
+
+        Unlike ``click``, this sets a state: replay leaves an already-checked
+        box checked instead of toggling it off.
+        """
+        if not isinstance(checked, bool):
+            raise ValueError("checked must be True or False")
+        element, target = await self._target(role, label, frame)
+        started = time.perf_counter()
+        await set_checked_element(self._bridge, element.backend_dom_id, checked)
+        self._snapshot = None
+        self._record("TERX.check", {"target": target, "checked": checked}, started)
+
+    async def select_option(self, role: str, label: str, variable: str, *, frame: str = "") -> None:
+        """Choose the ``<select>`` option whose visible label is a declared variable."""
+        self._require_variable(variable)
+        element, target = await self._target(role, label, frame)
+        started = time.perf_counter()
+        await select_option_element(
+            self._bridge, element.backend_dom_id, str(self._variables[variable])
+        )
+        self._snapshot = None
+        self._record("TERX.select", {"target": target, "option": f"{{{{{variable}}}}}"}, started)
+
+    async def press(self, role: str, label: str, key: str, *, frame: str = "") -> None:
+        """Press ``Enter``, ``Tab``, or ``Escape`` on one labelled element."""
+        if key not in PRESS_KEYS:
+            raise ValueError(f"key must be one of {', '.join(sorted(PRESS_KEYS))}")
+        element, target = await self._target(role, label, frame)
+        started = time.perf_counter()
+        await press_key_element(self._bridge, element.backend_dom_id, key)
+        self._snapshot = None
+        self._record("TERX.press", {"target": target, "key": key}, started)
 
     async def wait_for(
         self, condition: dict[str, str], *, timeout: float = 10.0, poll_interval: float = 0.1
@@ -155,7 +195,28 @@ class TerxActions:
                     raise TimeoutError(f"TERX condition was not met: {condition}") from exc
                 await asyncio.sleep(poll_interval)
 
-    async def _element(self, role: str, label: str) -> AXElement:
+    def _require_variable(self, variable: str) -> None:
+        if not isinstance(variable, str) or _VARIABLE_NAME.fullmatch(variable) is None:
+            raise ValueError("TERX variable names must be lower-snake-case identifiers")
+        if variable not in self._variables:
+            raise ValueError(f"TERX variable {variable!r} was not supplied to this workflow")
+
+    def _record(
+        self,
+        method: str,
+        params: dict[str, Any],
+        started: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._context.record_command(
+            CDPCommand(method, params, {}, (time.perf_counter() - started) * 1000, metadata or {})
+        )
+
+    async def _target(self, role: str, label: str, frame: str) -> tuple[AXElement, dict[str, Any]]:
+        element = await self._element(role, label, frame)
+        return element, await describe_target(self._bridge, element)
+
+    async def _element(self, role: str, label: str, frame: str = "") -> AXElement:
         if not isinstance(role, str) or not role or not isinstance(label, str) or not label:
             raise ValueError("TERX semantic targets need a non-empty role and label")
         if self._snapshot is None:
@@ -163,8 +224,17 @@ class TerxActions:
         matches = [
             element
             for element in self._snapshot.elements
-            if element.role == role and element.semantic_name == label
+            if element.role == role and element.semantic_name == label and element.frame == frame
         ]
+        if len(matches) != 1 and not frame:
+            # Not in the main frame: accept a unique match inside any iframe.
+            framed = [
+                element
+                for element in self._snapshot.elements
+                if element.role == role and element.semantic_name == label
+            ]
+            if len(framed) == 1:
+                matches = framed
         if len(matches) != 1:
             state = "missing" if not matches else "ambiguous"
             raise ReplayRefused(f"semantic target is {state}: {role} {label!r}")
@@ -196,6 +266,7 @@ class TerxWorkflow:
         mutation_guard: bool = True,
         mutation_threshold: int = 20,
         approval_verifier: ApprovalVerifier | None = None,
+        replay_timeout: float = 10.0,
     ) -> None:
         self.cache = cache
         self.bridge = bridge
@@ -211,6 +282,7 @@ class TerxWorkflow:
         self.mutation_guard = mutation_guard
         self.mutation_threshold = mutation_threshold
         self.approval_verifier = approval_verifier
+        self.replay_timeout = replay_timeout
 
     async def run(
         self,
@@ -256,6 +328,7 @@ class TerxWorkflow:
             mutation_guard=self.mutation_guard,
             mutation_threshold=self.mutation_threshold,
             approval_verifier=self.approval_verifier,
+            replay_timeout=self.replay_timeout,
         ) as context:
             cache_hit = context.hit
             if cache_hit:

@@ -6,6 +6,42 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ## [Unreleased]
 
+### Added
+
+- Three replayable actions: `TERX.check` (set a checkbox, switch, or radio on
+  or off without toggling), `TERX.select` (choose a dropdown option by label
+  or variable), and `TERX.press` (`Enter`, `Tab`, or `Escape`). They are
+  available as `TerxActions.set_checked`, `select_option`, and `press`, and as
+  the MCP tools `browser_set_checked`, `browser_select_option`, and
+  `browser_press_key`.
+- URL templates: a navigation path may hold `{{variable}}` placeholders, and a
+  path segment equal to a declared variable's value (3+ characters) is recorded
+  as one. Values are percent-encoded as a single segment on replay, and a
+  placeholder in the host is never replayable.
+- Same-origin iframes: the snapshot includes elements inside same-process
+  frames, tagged with their frame path, and every element action takes an
+  optional `frame=`. Page identity still uses the main frame only.
+- Multi-signal targets: new recordings also store the element's position among
+  same-role elements and a `data-testid`-style attribute. A label match whose
+  element has a different test id is refused; a changed label is tolerated
+  only when the test id and position agree, and is listed in
+  `ReplayReport.locator_notes`.
+- `terx eval-hard`: 15 scenarios with independent outcome checks, reporting
+  replay rate, false refusal rate, and unsafe outcomes. CI runs it with
+  `--gate`. Replay rate went from 40% to 100%, false refusals from 16.7% to
+  0%, and unsafe outcomes from 1 to 0 (see `docs/benchmarks.md`).
+- `TerxWorkflow(replay_timeout=...)`.
+
+### Fixed
+
+- A variable in a URL path was frozen at record time, so replaying "open order
+  B-200" reopened A-100 and still reported success.
+- MCP recordings could not identify targets on any page after the first
+  navigation; the server now gives the recorder a fresh snapshot before each
+  action.
+- `RecordingContext.record_command` now validates action parameters, not just
+  the method name.
+
 ### Changed
 
 - `terx/cache/cache.py` (about 2,000 lines) is split into focused modules:

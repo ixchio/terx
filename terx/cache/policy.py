@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -30,7 +31,60 @@ REPLAY_ACTIONS = {
     "TERX.navigate",
     "TERX.click",
     "TERX.type",
+    "TERX.check",
+    "TERX.select",
+    "TERX.press",
 }
+
+# Keys TERX.press may send. Each has one effect on a focused control; any
+# other key (and any modifier combination) is not replayable.
+PRESS_KEYS = {"Enter", "Tab", "Escape"}
+
+PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
+
+
+def validate_action(method: str, params: dict[str, Any]) -> None:
+    """Raise ``ValueError`` unless ``params`` is a well-formed TERX action.
+
+    This is the single definition of the persisted action format; storage
+    and replay preflight both call it.
+    """
+    if method not in REPLAY_ACTIONS:
+        raise ValueError(f"unsupported action: {method}")
+    if method == "TERX.navigate":
+        url = params.get("url")
+        if not isinstance(url, str) or not _is_replayable_url(url):
+            raise ValueError("TERX.navigate requires an http or https URL")
+        return
+    target = params.get("target")
+    if not isinstance(target, dict) or not all(
+        isinstance(target.get(key), str) and target[key] for key in ("role", "label")
+    ):
+        raise ValueError(f"{method} requires a labelled semantic target")
+    if "frame" in target and not isinstance(target["frame"], str):
+        raise ValueError("target frame must be a string")
+    if "test_id" in target and not (isinstance(target["test_id"], str) and target["test_id"]):
+        raise ValueError("target test_id must be a non-empty string")
+    if "ordinal" in target and not (
+        isinstance(target["ordinal"], int)
+        and not isinstance(target["ordinal"], bool)
+        and target["ordinal"] >= 0
+    ):
+        raise ValueError("target ordinal must be a non-negative integer")
+    if method == "TERX.type":
+        text = params.get("text")
+        if not isinstance(text, str) or PLACEHOLDER_RE.fullmatch(text) is None:
+            raise ValueError("TERX.type requires a named variable placeholder")
+    elif method == "TERX.check":
+        if not isinstance(params.get("checked"), bool):
+            raise ValueError("TERX.check requires a boolean checked state")
+    elif method == "TERX.select":
+        option = params.get("option")
+        if not isinstance(option, str) or not option:
+            raise ValueError("TERX.select requires an option label or placeholder")
+    elif method == "TERX.press":
+        if params.get("key") not in PRESS_KEYS:
+            raise ValueError(f"TERX.press key must be one of {', '.join(sorted(PRESS_KEYS))}")
 
 
 @dataclass(frozen=True)
@@ -171,11 +225,18 @@ class ReplayDecision:
 
 
 def _is_replayable_url(url: str) -> bool:
-    """Allow only credential- and query-free web navigation in replay data."""
+    """Allow only credential- and query-free web navigation in replay data.
+
+    A URL template may hold ``{{variable}}`` placeholders in its *path* only.
+    A placeholder in the scheme or host could send a replay to any site, so it
+    is never replayable.
+    """
     parsed = urlparse(url)
     return (
         parsed.scheme.lower() in {"http", "https"}
         and bool(parsed.netloc)
+        and "{" not in parsed.netloc
+        and "}" not in parsed.netloc
         and parsed.username is None
         and parsed.password is None
         and not parsed.query

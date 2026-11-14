@@ -97,3 +97,44 @@ comparison must run their current native reuse paths on the same authorized
 task, not a configuration snippet or a one-off Cloud smoke. Stagehand's hosted
 cache path still needs a Browserbase account and an authorized target before a
 real Stagehand cost record can be published.
+
+## Hard eval (1.0)
+
+`terx eval-hard` runs 15 scenarios against a local site in headless Chrome.
+Each one records a workflow on one page variant and replays it, with new
+variable values, against a second variant. The harness then checks the page's
+actual result itself, independently of TERX's report, so a replay that reports
+success but did the wrong thing is counted as unsafe.
+
+| Metric | Before (v0.5.3 + #1/#2) | After (this release) |
+| --- | :---: | :---: |
+| Scenarios | 12 | 15 (3 new must-refuse cases) |
+| Recordable at all | 8 / 12 | 15 / 15 |
+| **Replay rate** (correct replays / replayable scenarios) | **40%** (4 / 10) | **100%** (10 / 10) |
+| **False refusal rate** (refused or failed / recordable replayable) | **16.7%** (1 / 6) | **0%** (0 / 10) |
+| **Unsafe outcomes** (wrong result or replay that should refuse) | **1** | **0** |
+| Must-refuse pages refused | 2 / 2 | 5 / 5 |
+
+| Scenario | Expect | Before | After |
+| --- | --- | --- | --- |
+| Form submit loads a new page after a delay | replay | replayed | replayed |
+| Next target renders 700 ms after a click | replay | replayed | replayed |
+| Controlled input with a saved draft | replay | replayed | replayed |
+| Button inside an open shadow root | replay | replayed | replayed |
+| Form inside a same-origin iframe | replay | unsupported | replayed |
+| Button label translated; test id unchanged | replay | false refusal | replayed |
+| Ensure a checkbox is on when it may already be | replay | unsupported | replayed |
+| Choose a dropdown option from a variable | replay | unsupported | replayed |
+| Search submits on Enter, no button | replay | unsupported | replayed |
+| Variable in a URL path (`/orders/A-100`) | replay | **wrong result**: reopened A-100 | replayed |
+| A second identical button appears | refuse | refused | refused |
+| The target disappears | refuse | refused | refused |
+| Label and test id point at different buttons | refuse | (new) | refused |
+| Label changed and the element moved | refuse | (new) | refused |
+| The requested option does not exist | refuse | (new) | refused |
+
+CI runs `terx eval-hard --gate`, which fails on any unsafe outcome or false
+refusal. These are local fixture results on pages written to exercise known
+failure modes. They are not a measure of compatibility with arbitrary
+production sites, and a 100% replay rate here means only that every known
+failure mode in the suite is handled.
