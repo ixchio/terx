@@ -2890,3 +2890,68 @@ async def test_mcp_recording_follows_the_agent_across_pages(monkeypatch):
         stored = cache._ensure_db().execute("SELECT commands_json FROM sequences").fetchone()[0]
         methods = [command["method"] for command in json.loads(stored)]
         assert methods == ["TERX.click", "TERX.check"]
+
+
+# ------------------------------------------------------------------ #
+# Eval harness: race-free Chrome startup                               #
+# ------------------------------------------------------------------ #
+
+
+class _FakeChrome:
+    def __init__(self, returncode=None, stderr_text=""):
+        import io
+
+        self.returncode = returncode
+        self.stderr = io.StringIO(stderr_text)
+
+    def poll(self):
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_devtools_port_is_read_from_the_file_chrome_writes():
+    import asyncio
+
+    from terx.evals.local_suite import _wait_for_devtools_port
+
+    server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        with tempfile.TemporaryDirectory() as profile:
+
+            async def chrome_writes_port_late():
+                await asyncio.sleep(0.2)
+                (Path(profile) / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/x\n")
+
+            writer = asyncio.create_task(chrome_writes_port_late())
+            found = await _wait_for_devtools_port(_FakeChrome(), Path(profile), 5.0)
+            await writer
+            assert found == port
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_devtools_wait_reports_early_exit_and_timeout():
+    from terx.evals.local_suite import _wait_for_devtools_port
+
+    with tempfile.TemporaryDirectory() as profile:
+        with pytest.raises(RuntimeError, match="exited before CDP was ready.*sandbox"):
+            await _wait_for_devtools_port(
+                _FakeChrome(returncode=1, stderr_text="no usable sandbox"), Path(profile), 2.0
+            )
+        with pytest.raises(RuntimeError, match="TERX_CHROME_STARTUP_TIMEOUT"):
+            await _wait_for_devtools_port(_FakeChrome(), Path(profile), 0.3)
+
+
+def test_chrome_startup_timeout_is_configurable(monkeypatch):
+    from terx.evals.local_suite import _chrome_startup_timeout
+
+    monkeypatch.delenv("TERX_CHROME_STARTUP_TIMEOUT", raising=False)
+    assert _chrome_startup_timeout() == 30.0
+    monkeypatch.setenv("TERX_CHROME_STARTUP_TIMEOUT", "75")
+    assert _chrome_startup_timeout() == 75.0
+    for invalid in ("soon", "0", "-5"):
+        monkeypatch.setenv("TERX_CHROME_STARTUP_TIMEOUT", invalid)
+        assert _chrome_startup_timeout() == 30.0

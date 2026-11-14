@@ -62,9 +62,11 @@ class RecordingContext:
     Records a deliberately small semantic action set from a CDP bridge.
 
     Raw CDP is an implementation detail of a browser agent, not a stable or
-    safe replay format. v0.4 translates only navigation, labelled clicks, and
-    labelled text entry into TERX actions. Any other mutating action makes the
-    run non-cacheable; it is still allowed to execute on the cold path.
+    safe replay format. The recorder translates only navigation, labelled
+    clicks, and labelled text entry into TERX actions; check, select, and press
+    are recorded explicitly by the workflow adapter and MCP tools. Any other
+    mutating action makes the run non-cacheable; it is still allowed to execute
+    on the cold path.
     """
 
     def __init__(

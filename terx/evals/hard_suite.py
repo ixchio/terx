@@ -42,7 +42,7 @@ from urllib.parse import parse_qs
 from terx.cache import MemoryCache
 from terx.cdp.bridge import CDPBridge
 from terx.cdp.session import BrowserSession
-from terx.evals.local_suite import _chrome_binary, _free_port, _wait_for_chrome_debugger
+from terx.evals.local_suite import launch_chrome, stop_chrome
 from terx.integrations.workflow import TerxActions, TerxWorkflow
 
 Variant = Literal["cold", "warm"]
@@ -638,33 +638,15 @@ _OUTCOMES = (
 
 async def run_suite(only: list[str] | None = None) -> dict[str, Any]:
     scenarios = [s for s in SCENARIOS if not only or s.name in only]
-    http_port, cdp_port = _free_port(), _free_port()
-    server = HTTPServer(("127.0.0.1", http_port), HardEvalHandler)
+    server = HTTPServer(("127.0.0.1", 0), HardEvalHandler)
     Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{http_port}"
+    base = f"http://127.0.0.1:{server.server_port}"
     profile = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     cache_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     chrome: subprocess.Popen[str] | None = None
     results: list[ScenarioResult] = []
     try:
-        chrome = subprocess.Popen(
-            [
-                _chrome_binary(),
-                "--headless=new",
-                "--remote-debugging-address=127.0.0.1",
-                f"--remote-debugging-port={cdp_port}",
-                f"--user-data-dir={profile.name}",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-sandbox",
-                "about:blank",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        await _wait_for_chrome_debugger(chrome, cdp_port)
+        chrome, cdp_port = await launch_chrome(profile.name)
         cache = MemoryCache(
             db_path=Path(cache_dir.name) / "cache.db", audit_dir=Path(cache_dir.name) / "audit"
         )
@@ -674,14 +656,7 @@ async def run_suite(only: list[str] | None = None) -> dict[str, Any]:
                 results.append(await _run_scenario(scenario, cache, bridge, base))
     finally:
         if chrome is not None:
-            if chrome.poll() is None:
-                chrome.terminate()
-                try:
-                    chrome.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    chrome.kill()
-            if chrome.stderr is not None:
-                chrome.stderr.close()
+            stop_chrome(chrome)
         server.shutdown()
         profile.cleanup()
         cache_dir.cleanup()

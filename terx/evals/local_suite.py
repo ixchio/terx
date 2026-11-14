@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -134,31 +135,13 @@ class EvalCaseResult:
 
 
 async def run_suite(capture_dir: Path | None = None) -> dict[str, Any]:
-    http_port = _free_port()
-    cdp_port = _free_port()
-    server = _start_server(http_port)
+    server = _start_server(0)
+    http_port = server.server_port
     user_data_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     cache_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     chrome: subprocess.Popen[str] | None = None
     try:
-        chrome = subprocess.Popen(
-            [
-                _chrome_binary(),
-                "--headless=new",
-                "--remote-debugging-address=127.0.0.1",
-                f"--remote-debugging-port={cdp_port}",
-                f"--user-data-dir={user_data_dir.name}",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-sandbox",
-                "about:blank",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        await _wait_for_chrome_debugger(chrome, cdp_port)
+        chrome, cdp_port = await launch_chrome(user_data_dir.name)
 
         cache = MemoryCache(
             db_path=Path(cache_dir.name) / "cache.db",
@@ -209,14 +192,7 @@ async def run_suite(capture_dir: Path | None = None) -> dict[str, Any]:
         results.append(await _run_saved_tool_case(cache, base_url, cdp_port, capture_dir))
     finally:
         if chrome is not None:
-            if chrome.poll() is None:
-                chrome.terminate()
-                try:
-                    chrome.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    chrome.kill()
-            if chrome.stderr is not None:
-                chrome.stderr.close()
+            stop_chrome(chrome)
         server.shutdown()
         user_data_dir.cleanup()
         cache_dir.cleanup()
@@ -555,6 +531,94 @@ def _start_server(port: int) -> HTTPServer:
     server = HTTPServer(("127.0.0.1", port), EvalHandler)
     Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+CHROME_STARTUP_TIMEOUT_ENV = "TERX_CHROME_STARTUP_TIMEOUT"
+DEFAULT_CHROME_STARTUP_TIMEOUT = 30.0
+
+
+def _chrome_startup_timeout() -> float:
+    raw = os.environ.get(CHROME_STARTUP_TIMEOUT_ENV, "")
+    try:
+        value = float(raw) if raw else DEFAULT_CHROME_STARTUP_TIMEOUT
+    except ValueError:
+        value = DEFAULT_CHROME_STARTUP_TIMEOUT
+    return value if value > 0 else DEFAULT_CHROME_STARTUP_TIMEOUT
+
+
+async def launch_chrome(user_data_dir: str) -> tuple[subprocess.Popen[str], int]:
+    """Start headless Chrome on a port it chooses itself and wait for CDP.
+
+    ``--remote-debugging-port=0`` lets Chrome bind a free port atomically and
+    record it in ``DevToolsActivePort`` inside the profile, so there is no
+    window in which another process can take a port picked in advance. Cold
+    CI runners can be slow to start Chrome; the wait defaults to 30 seconds
+    and can be changed with ``TERX_CHROME_STARTUP_TIMEOUT``.
+    """
+    chrome = subprocess.Popen(
+        [
+            _chrome_binary(),
+            "--headless=new",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=0",
+            f"--user-data-dir={user_data_dir}",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-sandbox",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        port = await _wait_for_devtools_port(chrome, Path(user_data_dir), _chrome_startup_timeout())
+    except BaseException:
+        stop_chrome(chrome)
+        raise
+    return chrome, port
+
+
+async def _wait_for_devtools_port(
+    chrome: subprocess.Popen[str], profile: Path, timeout_seconds: float
+) -> int:
+    """Read the port Chrome chose from DevToolsActivePort, then confirm it listens."""
+    deadline = time.monotonic() + timeout_seconds
+    active_port_file = profile / "DevToolsActivePort"
+    while time.monotonic() < deadline:
+        if chrome.poll() is not None:
+            stderr = chrome.stderr.read() if chrome.stderr is not None else ""
+            detail = stderr.strip()[-2_000:] or "no Chrome stderr was produced"
+            raise RuntimeError(
+                f"Chrome exited before CDP was ready (exit {chrome.returncode}): {detail}"
+            )
+        try:
+            first_line = active_port_file.read_text().splitlines()[0]
+            port = int(first_line)
+        except (OSError, ValueError, IndexError):
+            await asyncio.sleep(0.1)
+            continue
+        remaining = max(deadline - time.monotonic(), 0.1)
+        await _wait_for_chrome_debugger(chrome, port, timeout_seconds=remaining)
+        return port
+    raise RuntimeError(
+        f"Chrome did not report a DevTools port within {timeout_seconds:.1f}s "
+        f"(set {CHROME_STARTUP_TIMEOUT_ENV} to allow longer)"
+    )
+
+
+def stop_chrome(chrome: subprocess.Popen[str]) -> None:
+    """Terminate Chrome, escalating to kill, and close its stderr pipe."""
+    if chrome.poll() is None:
+        chrome.terminate()
+        try:
+            chrome.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            chrome.kill()
+            chrome.wait(timeout=5)
+    if chrome.stderr is not None:
+        chrome.stderr.close()
 
 
 async def _wait_for_chrome_debugger(

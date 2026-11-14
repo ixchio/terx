@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 class CDPCommand:
     """A persisted replay action.
 
-    v0.4 stores only TERX's small semantic action set. ``method`` remains for
-    backwards-compatible JSON decoding, but persisted values are ``TERX.*``
-    actions rather than arbitrary CDP calls.
+    TERX stores only its small semantic action set (see ``terx.cache.actions``).
+    ``method`` remains for backwards-compatible JSON decoding, but persisted
+    values are ``TERX.*`` actions rather than arbitrary CDP calls.
     """
 
     method: str

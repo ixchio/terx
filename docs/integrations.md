@@ -113,7 +113,7 @@ the same `approval_verifier` contract.
 
 ## Promote a recorded task to an MCP tool
 
-v0.5 adds a small shared tool registry to the MCP server. It is designed for
+The MCP server includes a small shared tool registry. It is designed for
 the path that matters in practice: one agent completes a supported task, a
 reviewer names its inputs and outcome, and a later MCP client calls that same
 approved workflow with new values.

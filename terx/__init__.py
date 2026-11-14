@@ -17,7 +17,7 @@ from terx.cache import (
 from terx.tools import SavedTool, ToolManifestError, ToolResultError
 
 
-__version__ = "0.5.3"
+__version__ = "1.0.0"
 __all__ = [
     "CDPBridge",
     "BrowserSession",
