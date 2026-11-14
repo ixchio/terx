@@ -32,6 +32,22 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ### Fixed
 
+- Typing now replaces a field's value instead of appending to it. Replay, the
+  workflow adapter, and MCP `browser_type` select the field's existing contents
+  (autofill or prefilled values) before inserting text, through
+  `replace_field_text`.
+- The heartbeat reconnects the same tab in place (`CDPBridge.reconnect()`), so
+  callers' bridge objects and recorders stay valid. It previously reconnected
+  to whichever tab Chrome listed first and left callers holding a dead bridge.
+  If the active tab is gone, its bridge is closed and `bridge()` raises instead
+  of silently moving to another tab.
+- Audit files are never overwritten: default session IDs include a random
+  suffix, an existing file gets a new name, and caller-supplied session IDs are
+  sanitized so they cannot write outside the audit directory.
+- `CDPBridge` bounds its event queue (`max_queued_events`, default 1000, oldest
+  dropped) and no longer leaks a pending request when a socket send fails.
+- MCP `browser_task_start`, `browser_task_finish`, and `browser_tool_run`
+  refuse a concurrent call instead of letting two task starts both enter.
 - An expired workflow, or one whose policy changed without a
   `workflow_version` bump, is now replaced by the next successful recording.
   Previously `INSERT OR IGNORE` kept the dead row, so the workflow could never

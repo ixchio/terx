@@ -25,6 +25,7 @@ from terx.cache.cache import (
     RecordingContext,
     _assert_postcondition,
     _is_replayable_url,
+    replace_field_text,
     session_for,
 )
 from terx.cdp.bridge import CDPBridge
@@ -128,9 +129,8 @@ class TerxActions:
 
         element = await self._element(role, label)
         started = time.perf_counter()
-        await self._bridge.send_internal("DOM.focus", {"backendNodeId": element.backend_dom_id})
-        await self._bridge.send_internal(
-            "Input.insertText", {"text": str(self._variables[variable])}
+        await replace_field_text(
+            self._bridge, element.backend_dom_id, str(self._variables[variable])
         )
         placeholder = f"{{{{{variable}}}}}"
         self._context.record_command(

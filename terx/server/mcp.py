@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import functools
 import hashlib
 import hmac
 import logging
 import sys
 import time
+from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 try:
@@ -28,6 +31,7 @@ from terx.cache.cache import (
     RecordingContext,
     ReplayPolicy,
     ReplayRefused,
+    replace_field_text,
     session_for,
 )
 from terx.cdp.session import BrowserSession
@@ -133,6 +137,7 @@ class TERXServer:
         self._connect_lock = asyncio.Lock()
         self._session: BrowserSession | None = None
         self._task_ctx: RecordingContext | None = None
+        self._task_operation_running = False
         self._host = host
         self._port = port
         self._connect_timeout = connect_timeout
@@ -192,6 +197,31 @@ class TERXServer:
                 "google-chrome --remote-debugging-port=9222"
             )
         return self._session
+
+    def _exclusive(self, fn: Callable[..., Awaitable[dict]]) -> Callable[..., Awaitable[dict]]:
+        """Allow one task start/finish/saved-tool run at a time.
+
+        Each of these awaits browser work between checking and changing the
+        active task, so two concurrent MCP calls could otherwise both pass the
+        check. The flag is checked and set with no ``await`` in between, which
+        asyncio cannot interleave. A concurrent caller is refused, not queued.
+        """
+
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> dict:
+            if self._task_operation_running:
+                return {
+                    "success": False,
+                    "refused": True,
+                    "error": "Another browser task operation is in progress; retry when it ends.",
+                }
+            self._task_operation_running = True
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                self._task_operation_running = False
+
+        return wrapper
 
     def _scope_matches(self, manifest: SavedTool, scope_id: str) -> bool:
         """Check a caller's raw scope against a manifest's keyed digest."""
@@ -309,6 +339,7 @@ class TERXServer:
         """Register all MCP tools as instance methods."""
 
         @self.mcp.tool()
+        @self._exclusive
         async def browser_task_start(
             task: str,
             variables: dict[str, str] | None = None,
@@ -426,6 +457,7 @@ class TERXServer:
                 }
 
         @self.mcp.tool()
+        @self._exclusive
         async def browser_task_finish(success: bool = True) -> dict:
             """
             Finish the active cacheable browser task.
@@ -550,6 +582,7 @@ class TERXServer:
             return {"tools": [tool.as_dict() for tool in self._cache.list_tools()]}
 
         @self.mcp.tool()
+        @self._exclusive
         async def browser_tool_run(
             name: str,
             inputs: dict[str, str],
@@ -735,8 +768,9 @@ class TERXServer:
         @self.mcp.tool()
         async def browser_type(element_id: int, text: str) -> dict:
             """
-            Type text into an input field by element ID.
-            Uses framework-adaptive input (handles React/Vue without state conflicts).
+            Replace an input field's value with text, by element ID.
+            Existing contents (autofill, prefilled values) are replaced, not
+            appended to, so a recorded entry replays to the same final value.
             """
             await self._ensure_connected()
             session = self._get_session()
@@ -747,11 +781,7 @@ class TERXServer:
             if el is None:
                 return {"success": False, "error": f"Element {element_id} not found."}
 
-            # Focus the element by backendNodeId
-            await bridge.send("DOM.focus", {"backendNodeId": el.backend_dom_id})
-            await asyncio.sleep(0.1)
-
-            await bridge.send("Input.insertText", {"text": text})
+            await replace_field_text(bridge, el.backend_dom_id, text, record=True)
 
             return {
                 "success": True,

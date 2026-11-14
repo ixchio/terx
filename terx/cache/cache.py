@@ -23,6 +23,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -979,9 +980,17 @@ class MemoryCache:
             {"type": "frame",   "data": {...}}  ← one per CDP command
         """
         self.audit_dir.mkdir(parents=True, exist_ok=True)
-        audit_path = self.audit_dir / f"{session_id}.jsonl"
+        # The id can come from a caller: keep it inside audit_dir and never
+        # overwrite an earlier session's record.
+        safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id).strip("._") or "session"
+        audit_path = self.audit_dir / f"{safe_id}.jsonl"
+        try:
+            handle = audit_path.open("x")
+        except FileExistsError:
+            audit_path = self.audit_dir / f"{safe_id}-{uuid.uuid4().hex[:12]}.jsonl"
+            handle = audit_path.open("x")
 
-        with audit_path.open("w") as f:
+        with handle as f:
             # Session header
             session_record = {
                 "type": "session",
@@ -1068,7 +1077,9 @@ class RecordingContext:
         self._cache = cache
         self._bridge = bridge
         self._task = task
-        self._session_id = session_id or f"browser_session_{int(time.time())}"
+        self._session_id = (
+            session_id or f"browser_session_{int(time.time())}-{uuid.uuid4().hex[:12]}"
+        )
         self._variables = _normalize_variables(variables or {})
         self._policy = ReplayPolicy(
             scope_id=scope_id,
@@ -1748,6 +1759,63 @@ def _find_replay_target(snapshot: DOMSnapshot, target: Any) -> Any:
 
 REPLAY_POLL_INTERVAL = 0.1
 
+# Selects an editable element's current contents so the next text insertion
+# replaces it. Input.insertText alone appends to autofilled or prefilled values.
+_SELECT_EDITABLE_CONTENTS = """function() {
+  if ('value' in this && typeof this.select === 'function') {
+    this.select();
+    return true;
+  }
+  if (this.isContentEditable) {
+    const range = document.createRange();
+    range.selectNodeContents(this);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  }
+  return false;
+}"""
+
+
+async def replace_field_text(
+    bridge: CDPBridge, backend_node_id: int, text: str, *, record: bool = False
+) -> None:
+    """Focus one field and replace its whole value with ``text``.
+
+    The selection step always uses ``send_internal`` so it never reaches a
+    recorder. With ``record=True`` the focus and insertion go through
+    ``send`` so a cold-path recorder sees an ordinary labelled focus followed
+    by text entry; an empty value then deletes via a key event, which the
+    recorder correctly treats as non-replayable.
+    """
+    send = bridge.send if record else bridge.send_internal
+    await send("DOM.focus", {"backendNodeId": backend_node_id})
+    resolved = await bridge.send_internal("DOM.resolveNode", {"backendNodeId": backend_node_id})
+    object_id = resolved.get("object", {}).get("objectId")
+    if isinstance(object_id, str) and object_id:
+        await bridge.send_internal(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": object_id,
+                "functionDeclaration": _SELECT_EDITABLE_CONTENTS,
+                "returnByValue": True,
+            },
+        )
+    if text:
+        await send("Input.insertText", {"text": text})
+        return
+    for event_type in ("keyDown", "keyUp"):
+        await send(
+            "Input.dispatchKeyEvent",
+            {
+                "type": event_type,
+                "key": "Backspace",
+                "code": "Backspace",
+                "windowsVirtualKeyCode": 8,
+            },
+        )
+
 
 def _preflight_replay(commands: list[CDPCommand], variables: dict[str, Any]) -> None:
     """Statically validate a whole cached sequence before any action runs.
@@ -1840,8 +1908,7 @@ async def _execute_replay_action(
         if not isinstance(text, str):
             raise ReplayRefused("cached text action has no string value")
         text = _interpolate_placeholders(text, variables)
-        await bridge.send_internal("DOM.focus", {"backendNodeId": element.backend_dom_id})
-        await bridge.send_internal("Input.insertText", {"text": text})
+        await replace_field_text(bridge, element.backend_dom_id, text)
         return
 
     resolved = await bridge.send_internal(
