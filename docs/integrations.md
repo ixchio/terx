@@ -119,8 +119,10 @@ reviewer names its inputs and outcome, and a later MCP client calls that same
 approved workflow with new values.
 
 First record the task normally and finish it successfully. Then save a
-manifest. The raw `scope_id` is used only to make a digest; it is supplied and
-checked again on every invocation.
+manifest. TERX refuses the manifest unless a live recorded workflow matches its
+task, scope, version, and policy. The raw `scope_id` is used only to make a
+keyed digest; it is supplied and checked again on every invocation, and
+replacing an existing tool requires that tool's own scope.
 
 ```text
 browser_tool_save(
@@ -145,8 +147,9 @@ browser_tool_save(
 Use `browser_tool_list()` to discover the input and result schemas, then call
 it through `browser_tool_run(name, inputs, scope_id)`. The run never starts an
 agent on a miss: it replays a matching approved semantic workflow and returns
-fresh, declared page output, or returns a refusal. `browser_tool_delete(name)`
-removes the manifest without deleting the historical replay record.
+fresh, declared page output, or returns a refusal. `browser_tool_delete(name,
+scope_id)` removes the manifest without deleting the historical replay record,
+and `cache_invalidate(domain, scope_id)` clears only that scope's workflows.
 
 The result schema is deliberately limited to visible text from a CSS selector,
 the page title, the page URL, and a non-sensitive echoed input. There is no

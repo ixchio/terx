@@ -11,12 +11,15 @@ Writes TERX audit JSONL files for recorded and replayed browser sessions.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import hmac
 import inspect
 import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -39,7 +42,8 @@ logger = logging.getLogger(__name__)
 SIMILARITY_THRESHOLD = 0.85
 SSIM_THRESHOLD = 0.85
 AUDIT_DIR = Path(".terx/audit")
-SCREENSHOT_DIR = Path(".terx/screenshots")
+SCOPE_KEY_FILENAME = "scope.key"
+_SCOPE_DIGEST_CONTEXT = b"terx-scope-v1:"
 
 MUTATING_CDP_METHODS = {
     "Page.navigate",
@@ -127,8 +131,13 @@ class CachedSequence:
 class ReplayPolicy:
     """Explicit contract that makes a workflow eligible for replay.
 
-    ``scope_id`` is never persisted in plaintext. Its SHA-256 digest binds a
-    workflow to a caller-controlled account, tenant, environment, or fixture.
+    ``scope_id`` is never persisted in plaintext. The cache stores a keyed
+    HMAC digest (see :meth:`MemoryCache.scope_digest`) that binds a workflow to
+    a caller-controlled account, tenant, environment, or fixture. A scope is a
+    namespace the caller asserts, not an authentication credential.
+
+    :meth:`scope_hash` is the unkeyed SHA-256 sent to a host approval verifier,
+    which already holds the raw scope; it is not what the cache persists.
     """
 
     scope_id: str | None = None
@@ -337,12 +346,93 @@ class MemoryCache:
         db_path: str | Path = ".terx/cache.db",
         audit_dir: str | Path = AUDIT_DIR,
         similarity_threshold: float = SIMILARITY_THRESHOLD,
+        *,
+        scope_key: bytes | None = None,
+        visual_audit: bool = False,
     ) -> None:
+        """Create a cache.
+
+        ``scope_key`` keys scope digests. When omitted, a random key is created
+        once at ``<db dir>/scope.key`` (mode 0600). Pass the same key to every
+        process that must share replay entries. ``visual_audit`` opts in to
+        storing end-of-workflow screenshots, which can contain page data.
+        """
+        if scope_key is not None and len(scope_key) < 32:
+            raise ValueError("scope_key must be at least 32 bytes")
         self.db_path = Path(db_path)
         self.audit_dir = Path(audit_dir)
         self.similarity_threshold = similarity_threshold
+        self.visual_audit = visual_audit
+        self.screenshot_dir = self.db_path.parent / "screenshots"
+        self._scope_key = scope_key
+        self._adopted_scopes: set[str] = set()
         self._db: sqlite3.Connection | None = None
         self._db_lock = threading.RLock()  # Reentrant: public methods call _ensure_db().
+
+    # ------------------------------------------------------------------ #
+    # Scope digests                                                         #
+    # ------------------------------------------------------------------ #
+
+    def scope_digest(self, scope_id: str | None) -> str:
+        """Return the keyed digest the cache stores for ``scope_id``.
+
+        An unkeyed hash of a guessable scope such as ``acme-prod:billing`` can
+        be reversed by trying candidates; an HMAC cannot without the local key,
+        so a digest shown through MCP or ``terx inspect`` reveals nothing.
+        """
+        if not scope_id:
+            return ""
+        return hmac.new(
+            self._get_scope_key(), _SCOPE_DIGEST_CONTEXT + scope_id.encode(), hashlib.sha256
+        ).hexdigest()
+
+    def _get_scope_key(self) -> bytes:
+        with self._db_lock:
+            if self._scope_key is None:
+                self._scope_key = _load_or_create_scope_key(
+                    self.db_path.parent / SCOPE_KEY_FILENAME
+                )
+            return self._scope_key
+
+    def adopt_legacy_scope(self, scope_id: str | None) -> int:
+        """Re-key pre-HMAC entries for a scope the caller has just presented.
+
+        Earlier releases stored ``sha256(scope_id)``. The raw scope is needed to
+        compute the new digest, so entries are upgraded lazily, the first time a
+        caller supplies that scope. Returns the number of rows re-keyed.
+        """
+        if not scope_id or scope_id in self._adopted_scopes:
+            return 0
+        legacy = hashlib.sha256(scope_id.encode()).hexdigest()
+        digest = self.scope_digest(scope_id)
+        with self._db_lock:
+            db = self._ensure_db()
+            changed = db.execute(
+                "UPDATE OR IGNORE sequences SET scope_hash = ? WHERE scope_hash = ?",
+                (digest, legacy),
+            ).rowcount
+            # Rows left behind collided with an entry already under the new
+            # digest, so they are superseded duplicates.
+            db.execute("DELETE FROM sequences WHERE scope_hash = ?", (legacy,))
+            changed += db.execute(
+                "UPDATE saved_tools SET scope_hash = ? WHERE scope_hash = ?", (digest, legacy)
+            ).rowcount
+            db.commit()
+            self._adopted_scopes.add(scope_id)
+        if changed:
+            logger.info("Re-keyed %d legacy cache rows to an HMAC scope digest", changed)
+        return changed
+
+    def screenshot_path(
+        self, *, scope_hash: str, task_key: str, structural_hash: str, workflow_version: int
+    ) -> Path:
+        """Return the opt-in baseline path for one exact scoped workflow.
+
+        The name is a digest of the full replay identity, so tenants that share
+        a page structure never share (or overwrite) a baseline image.
+        """
+        identity = f"{scope_hash}:{task_key}:{structural_hash}:{workflow_version}".encode()
+        return self.screenshot_dir / f"{hashlib.sha256(identity).hexdigest()}.png"
 
     # ------------------------------------------------------------------ #
     # Setup                                                                 #
@@ -580,27 +670,44 @@ class MemoryCache:
         workflow_version: int = 1,
         policy_json: str = "{}",
         ttl_seconds: int | None = None,
-    ) -> None:
-        """Persist a successful action sequence.
+    ) -> bool:
+        """Persist a successful action sequence; return whether it was written.
 
-        Uses INSERT OR IGNORE to preserve the first successful sequence for each
-        (domain, structural_hash, task_key). Subsequent runs with the same DOM
-        structure will not overwrite the cached sequence.
+        The first successful sequence for a scoped cache key is preserved while
+        it is live and its policy is unchanged. An expired entry, or one whose
+        persisted policy (and therefore fingerprint) differs, can never be
+        replayed, so a new successful recording replaces it instead of being
+        silently ignored.
         """
         with self._db_lock:
             db = self._ensure_db()
             now = datetime.now(timezone.utc).isoformat()
             commands_json = json.dumps([_sanitize_command_for_storage(c) for c in commands])
             task_key = _task_key(task_description)
-            expires_at = time.time() + ttl_seconds if ttl_seconds is not None else None
+            current_time = time.time()
+            expires_at = current_time + ttl_seconds if ttl_seconds is not None else None
 
-            db.execute(
+            cursor = db.execute(
                 """
-                INSERT OR IGNORE INTO sequences
+                INSERT INTO sequences
                     (domain, structural_hash, task_key, task_description, role_sequence,
                      commands_json, hit_count, created_at, last_used, origin,
                      route_pattern, scope_hash, workflow_version, policy_json, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    domain, structural_hash, task_key, origin, route_pattern,
+                    scope_hash, workflow_version
+                ) DO UPDATE SET
+                    task_description = excluded.task_description,
+                    role_sequence    = excluded.role_sequence,
+                    commands_json    = excluded.commands_json,
+                    hit_count        = 0,
+                    created_at       = excluded.created_at,
+                    last_used        = excluded.last_used,
+                    policy_json      = excluded.policy_json,
+                    expires_at       = excluded.expires_at
+                WHERE (sequences.expires_at IS NOT NULL AND sequences.expires_at <= ?)
+                   OR sequences.policy_json != excluded.policy_json
                 """,
                 (
                     domain,
@@ -617,20 +724,31 @@ class MemoryCache:
                     workflow_version,
                     policy_json,
                     expires_at,
+                    current_time,
                 ),
             )
+            written = cursor.rowcount > 0
             try:
                 db.commit()
             except sqlite3.Error as e:
                 logger.error("Failed to commit cache sequence: %s", e)
                 raise RuntimeError(f"Cache storage failed: {e}") from e
-            logger.info(
-                "Cached %d commands for domain=%s task=%s hash=%.8s",
-                len(commands),
-                domain,
-                task_key,
-                structural_hash,
-            )
+            if written:
+                logger.info(
+                    "Cached %d commands for domain=%s task=%s hash=%.8s",
+                    len(commands),
+                    domain,
+                    task_key,
+                    structural_hash,
+                )
+            else:
+                logger.info(
+                    "Kept existing live sequence for domain=%s task=%s hash=%.8s",
+                    domain,
+                    task_key,
+                    structural_hash,
+                )
+            return written
 
     def increment_hit(
         self,
@@ -664,13 +782,51 @@ class MemoryCache:
             )
             db.commit()
 
-    def invalidate(self, domain: str) -> int:
-        """Remove all cached sequences for a domain. Returns rows deleted."""
+    def invalidate(self, domain: str, *, scope_hash: str | None = None) -> int:
+        """Remove cached sequences for a domain, optionally only one scope's.
+
+        Returns rows deleted. Untrusted callers (such as MCP clients) should
+        always pass ``scope_hash`` so they cannot wipe other tenants' entries.
+        """
         with self._db_lock:
             db = self._ensure_db()
-            cursor = db.execute("DELETE FROM sequences WHERE domain = ?", (domain,))
+            if scope_hash is None:
+                cursor = db.execute("DELETE FROM sequences WHERE domain = ?", (domain,))
+            else:
+                cursor = db.execute(
+                    "DELETE FROM sequences WHERE domain = ? AND scope_hash = ?",
+                    (domain, scope_hash),
+                )
             db.commit()
             return cursor.rowcount
+
+    def has_workflow(
+        self,
+        task_description: str,
+        *,
+        scope_hash: str,
+        workflow_version: int,
+        policy_fingerprint: str,
+    ) -> bool:
+        """Return whether a live recorded workflow matches this exact contract."""
+        with self._db_lock:
+            db = self._ensure_db()
+            rows = db.execute(
+                "SELECT policy_json, expires_at FROM sequences "
+                "WHERE task_key = ? AND scope_hash = ? AND workflow_version = ?",
+                (_task_key(task_description), scope_hash, workflow_version),
+            ).fetchall()
+        now = time.time()
+        for policy_json, expires_at in rows:
+            if expires_at is not None and expires_at <= now:
+                continue
+            try:
+                stored = json.loads(policy_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(stored, dict) and stored.get("fingerprint") == policy_fingerprint:
+                return True
+        return False
 
     def stats(self) -> dict:
         """Return cache statistics."""
@@ -905,7 +1061,10 @@ class RecordingContext:
         mutation_guard: bool = True,
         mutation_threshold: int = 20,
         approval_verifier: ApprovalVerifier | None = None,
+        replay_timeout: float = 10.0,
     ) -> None:
+        if replay_timeout <= 0:
+            raise ValueError("replay_timeout must be positive")
         self._cache = cache
         self._bridge = bridge
         self._task = task
@@ -925,6 +1084,9 @@ class RecordingContext:
         self._mutation_guard = mutation_guard
         self._mutation_threshold = mutation_threshold
         self._approval_verifier = approval_verifier
+        self._replay_timeout = replay_timeout
+        self._stored = False
+        self._scope_digest = ""
         self._snapshot: DOMSnapshot | None = None
         self._domain: str = "unknown"
         self._origin: str = ""
@@ -949,6 +1111,11 @@ class RecordingContext:
     def recorded_commands(self) -> int:
         return len(self._recorded_commands)
 
+    @property
+    def stored(self) -> bool:
+        """True only when this cold run actually wrote a replayable sequence."""
+        return self._stored
+
     async def replay(
         self,
         variables: dict[str, Any] | None = None,
@@ -960,6 +1127,11 @@ class RecordingContext:
         TERX does not invoke an LLM or self-healer during replay. A destructive
         workflow needs a host verifier that atomically consumes an approval for
         this replay identity; a bare token is never trusted.
+
+        Every cached action and every required variable is validated before
+        the first action runs or an approval is consumed. Semantic targets on
+        later pages can only be resolved once those pages exist, so a target
+        that never appears still refuses mid-sequence.
         """
         if self._cached_seq is None:
             raise RuntimeError("No cached sequence to replay (cache miss)")
@@ -976,30 +1148,54 @@ class RecordingContext:
                 self._refuse(f"precondition failed: {exc}")
             self.decision.preconditions_verified = True
 
+            try:
+                _preflight_replay(self._cached_seq.commands, replay_variables)
+            except MissingReplayVariable as exc:
+                self._refuse(f"missing replay variable: {exc.variable_name}")
+            except ReplayRefused as exc:
+                self._refuse(exc.reason)
+
             if self._policy.side_effect == "destructive":
                 await self._verify_destructive_approval(approval_token)
 
             if self._mutation_guard:
                 mutation_guard_started = await _start_mutation_guard(self._bridge)
+                mutation_count = 0 if mutation_guard_started else None
 
             for cmd in self._cached_seq.commands:
                 try:
-                    await _execute_replay_action(self._bridge, cmd, replay_variables)
+                    await _execute_replay_action(
+                        self._bridge, cmd, replay_variables, timeout=self._replay_timeout
+                    )
                 except MissingReplayVariable as exc:
                     self._refuse(f"missing replay variable: {exc.variable_name}")
                 except ReplayRefused as exc:
                     self._refuse(exc.reason)
                 except Exception as exc:
-                    self.decision.status = "failed"
-                    self.decision.reasons = [f"replay failed at {cmd.method}: {exc}"]
+                    self._fail(f"replay failed at {cmd.method}: {exc}")
                     raise CacheReplayError(cmd.method) from exc
 
-            if mutation_guard_started:
-                mutation_count = await _read_mutation_count(self._bridge)
-                if mutation_count is not None and mutation_count > self._mutation_threshold:
-                    raise MutationDriftError(mutation_count, self._mutation_threshold)
+                if mutation_guard_started:
+                    # The observer lives in page JS and is lost on navigation,
+                    # so accumulate after every step and reinstall it. Drift
+                    # stops the sequence before the next action runs.
+                    step_count = await _read_mutation_count(self._bridge)
+                    mutation_count += step_count or 0
+                    if mutation_count > self._mutation_threshold:
+                        self._fail(
+                            f"mutation drift: {mutation_count} DOM changes exceeded "
+                            f"threshold {self._mutation_threshold}"
+                        )
+                        raise MutationDriftError(mutation_count, self._mutation_threshold)
+                    await _start_mutation_guard(self._bridge)
 
-            await _assert_postcondition(self._bridge, self._postcondition)
+            try:
+                await _wait_for_condition(
+                    self._bridge, self._postcondition, timeout=self._replay_timeout
+                )
+            except PostconditionFailed as exc:
+                self._fail(f"postcondition failed after replay: {exc}")
+                raise
             self.decision.postconditions_verified = True
         finally:
             if mutation_guard_started:
@@ -1053,13 +1249,36 @@ class RecordingContext:
             was_cache_hit=True,
         )
 
+    async def _save_baseline_screenshot(self) -> None:
+        """Persist an opt-in end-state baseline; it can contain page data."""
+        try:
+            import base64 as _b64
+
+            result = await self._bridge.send_internal("Page.captureScreenshot", {"format": "png"})
+            path = self._cache.screenshot_path(
+                scope_hash=self._scope_digest,
+                task_key=_task_key(self._task),
+                structural_hash=self._snapshot.structural_hash,
+                workflow_version=self._policy.workflow_version,
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(_b64.b64decode(result.get("data", "")))
+        except Exception as e:
+            logger.warning("Failed to save baseline screenshot for SSIM: %s", e)
+
     async def _run_ssim_audit(self) -> None:
-        """Run SSIM visual audit comparing current screenshot to cached baseline."""
-        if self._cached_seq is None:
+        """Opt-in SSIM visual audit comparing the end state to the baseline."""
+        if self._cached_seq is None or not self._cache.visual_audit:
             return
 
-        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        screenshot_path = SCREENSHOT_DIR / f"{self._cached_seq.structural_hash}.png"
+        screenshot_path = self._cache.screenshot_path(
+            scope_hash=self._cached_seq.scope_hash,
+            task_key=self._cached_seq.task_key,
+            structural_hash=self._cached_seq.structural_hash,
+            workflow_version=self._cached_seq.workflow_version,
+        )
 
         if screenshot_path.exists():
             try:
@@ -1101,6 +1320,22 @@ class RecordingContext:
             scope_verified=True,
         )
         raise ReplayRefused(reason)
+
+    def _fail(self, reason: str) -> None:
+        """Record a replay that started acting but did not reach a verified end."""
+        self.decision.status = "failed"
+        self.decision.reasons = [reason]
+        self.report = ReplayReport(
+            task_description=self._task,
+            domain=self._domain,
+            cache_hit=True,
+            status="failed",
+            refusal_reasons=[reason],
+            workflow_version=self._policy.workflow_version,
+            route_pattern=self._route_pattern,
+            scope_verified=True,
+            preconditions_verified=self.decision.preconditions_verified,
+        )
 
     async def _verify_destructive_approval(self, approval_token: str | None) -> None:
         """Require a host to validate and consume a destructive replay approval."""
@@ -1234,6 +1469,9 @@ class RecordingContext:
         # A policy is mandatory before a sequence can enter, or be read from,
         # the replay cache. Cold-path browser work remains available without it.
         cacheability_reasons = self._policy.cacheability_reasons()
+        if self._policy.scope_id:
+            self._cache.adopt_legacy_scope(self._policy.scope_id)
+        self._scope_digest = self._cache.scope_digest(self._policy.scope_id)
         if cacheability_reasons:
             self.decision.reasons = cacheability_reasons
         else:
@@ -1250,7 +1488,7 @@ class RecordingContext:
                 self._task,
                 origin=self._origin,
                 route=self._route,
-                scope_hash=self._policy.scope_hash(),
+                scope_hash=self._scope_digest,
                 workflow_version=self._policy.workflow_version,
                 policy_fingerprint=self._policy.fingerprint(),
             )
@@ -1263,7 +1501,7 @@ class RecordingContext:
             self._run_number = db.execute(
                 "SELECT COALESCE(SUM(hit_count), 0) + COUNT(*) + 1 "
                 "FROM sequences WHERE domain = ? AND task_key = ? AND origin = ? AND scope_hash = ?",
-                (self._domain, task_key, self._origin, self._policy.scope_hash()),
+                (self._domain, task_key, self._origin, self._scope_digest),
             ).fetchone()[0]
 
         if not self.hit:
@@ -1315,7 +1553,7 @@ class RecordingContext:
                 self.decision.status = "refused"
                 self.decision.reasons = reasons
             else:
-                self._cache.store(
+                self._stored = self._cache.store(
                     domain=self._domain,
                     structural_hash=self._snapshot.structural_hash,
                     role_sequence=self._snapshot.role_sequence,
@@ -1323,24 +1561,13 @@ class RecordingContext:
                     commands=self._recorded_commands,
                     origin=self._origin,
                     route_pattern=self._route_pattern,
-                    scope_hash=self._policy.scope_hash(),
+                    scope_hash=self._scope_digest,
                     workflow_version=self._policy.workflow_version,
                     policy_json=json.dumps(self._policy.persisted_summary(), sort_keys=True),
                     ttl_seconds=self._policy.ttl_seconds,
                 )
-                try:
-                    import base64 as _b64
-
-                    result = await self._bridge.send_internal(
-                        "Page.captureScreenshot", {"format": "png"}
-                    )
-                    screenshot_bytes = _b64.b64decode(result.get("data", ""))
-                    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-                    (SCREENSHOT_DIR / f"{self._snapshot.structural_hash}.png").write_bytes(
-                        screenshot_bytes
-                    )
-                except Exception as e:
-                    logger.warning("Failed to save baseline screenshot for SSIM: %s", e)
+                if self._stored and self._cache.visual_audit:
+                    await self._save_baseline_screenshot()
 
             # Write audit file.
             self._cache.write_audit(
@@ -1393,6 +1620,7 @@ def session_for(
     mutation_guard: bool = True,
     mutation_threshold: int = 20,
     approval_verifier: ApprovalVerifier | None = None,
+    replay_timeout: float = 10.0,
 ) -> RecordingContext:
     """
     Factory: create a RecordingContext for a task on the current page.
@@ -1429,7 +1657,32 @@ def session_for(
         mutation_guard=mutation_guard,
         mutation_threshold=mutation_threshold,
         approval_verifier=approval_verifier,
+        replay_timeout=replay_timeout,
     )
+
+
+def _load_or_create_scope_key(path: Path) -> bytes:
+    """Read the local scope key, creating a random owner-only one if absent."""
+    try:
+        key = path.read_bytes()
+    except FileNotFoundError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_bytes(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Another process created it first; wait briefly for its write.
+            for _ in range(20):
+                key = path.read_bytes()
+                if len(key) >= 32:
+                    break
+                time.sleep(0.05)
+        else:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(key)
+    if len(key) < 32:
+        raise RuntimeError(f"TERX scope key at {path} is invalid; delete it to regenerate")
+    return key
 
 
 def _task_key(task_description: str) -> str:
@@ -1493,8 +1746,82 @@ def _find_replay_target(snapshot: DOMSnapshot, target: Any) -> Any:
     return matches[0]
 
 
+REPLAY_POLL_INTERVAL = 0.1
+
+
+def _preflight_replay(commands: list[CDPCommand], variables: dict[str, Any]) -> None:
+    """Statically validate a whole cached sequence before any action runs.
+
+    Raises ``ReplayRefused`` for a malformed or unsupported action and
+    ``MissingReplayVariable`` for any placeholder without a supplied value, so
+    neither can surface after earlier steps have already changed the page.
+    """
+    for command in commands:
+        if command.method not in REPLAY_ACTIONS:
+            raise ReplayRefused(f"unsupported cached action: {command.method}")
+        if command.method == "TERX.navigate":
+            url = command.params.get("url")
+            if not isinstance(url, str) or not _is_replayable_url(url):
+                raise ReplayRefused("cached navigation URL is not permitted")
+            continue
+        target = command.params.get("target")
+        if not isinstance(target, dict) or not all(
+            isinstance(target.get(key), str) and target[key] for key in ("role", "label")
+        ):
+            raise ReplayRefused("semantic target requires role and label")
+        if command.method == "TERX.type":
+            text = command.params.get("text")
+            if not isinstance(text, str):
+                raise ReplayRefused("cached text action has no string value")
+            _interpolate_placeholders(text, variables)
+
+
+async def _resolve_replay_target(bridge: CDPBridge, target: Any, timeout: float) -> Any:
+    """Wait for a semantic target to appear; refuse at once if it is ambiguous.
+
+    A click often starts a navigation or an async render, so the next target
+    may not exist yet. A missing target is polled until ``timeout``; snapshot
+    errors while a page is mid-navigation are treated as "not yet".
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            snapshot = await DOMExtractor().snapshot(bridge)
+            return _find_replay_target(snapshot, target)
+        except ReplayRefused as exc:
+            if "ambiguous" in exc.reason or time.monotonic() >= deadline:
+                raise
+        except Exception:
+            if time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(REPLAY_POLL_INTERVAL)
+
+
+async def _wait_for_condition(bridge: CDPBridge, condition: Any, timeout: float) -> None:
+    """Poll a declarative or callable condition until it holds or times out."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            await _assert_postcondition(bridge, condition)
+            return
+        except PostconditionFailed:
+            if time.monotonic() >= deadline:
+                raise
+        except (TypeError, ValueError):
+            raise  # A malformed condition will not become valid by waiting.
+        except Exception as exc:
+            # The execution context is destroyed while a navigation commits.
+            if time.monotonic() >= deadline:
+                raise PostconditionFailed(f"condition could not be evaluated: {exc}") from exc
+        await asyncio.sleep(REPLAY_POLL_INTERVAL)
+
+
 async def _execute_replay_action(
-    bridge: CDPBridge, command: CDPCommand, variables: dict[str, Any]
+    bridge: CDPBridge,
+    command: CDPCommand,
+    variables: dict[str, Any],
+    *,
+    timeout: float = 10.0,
 ) -> None:
     """Execute one TERX semantic action without triggering bridge recorders."""
     if command.method not in REPLAY_ACTIONS:
@@ -1504,11 +1831,10 @@ async def _execute_replay_action(
         if not isinstance(url, str) or not _is_replayable_url(url):
             raise ReplayRefused("cached navigation URL is not permitted")
         await bridge.send_internal("Page.navigate", {"url": url})
-        await bridge.wait_for_load(timeout=10.0)
+        await bridge.wait_for_load(timeout=timeout)
         return
 
-    snapshot = await DOMExtractor().snapshot(bridge)
-    element = _find_replay_target(snapshot, command.params.get("target"))
+    element = await _resolve_replay_target(bridge, command.params.get("target"), timeout)
     if command.method == "TERX.type":
         text = command.params.get("text")
         if not isinstance(text, str):
@@ -1528,6 +1854,9 @@ async def _execute_replay_action(
         "Runtime.callFunctionOn",
         {"objectId": object_id, "functionDeclaration": "function() { this.click(); }"},
     )
+    # A click may start a navigation; let a started load settle before the
+    # next step snapshots the page. Target polling covers loads that begin late.
+    await bridge.wait_for_load(timeout=timeout)
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -1753,13 +2082,20 @@ async def _start_mutation_guard(bridge: CDPBridge) -> bool:
 
 
 async def _read_mutation_count(bridge: CDPBridge) -> int | None:
-    expression = "window.__TERX_MUTATION_GUARD__ ? window.__TERX_MUTATION_GUARD__.count : 0"
+    """Return the observed count, or ``None`` when the observer is gone.
+
+    A navigation replaces ``window``, so a missing guard is not proof of zero
+    mutations; callers reinstall it and accumulate across steps.
+    """
+    expression = "window.__TERX_MUTATION_GUARD__ ? window.__TERX_MUTATION_GUARD__.count : null"
     try:
         result = await bridge.send_internal(
             "Runtime.evaluate", {"expression": expression, "returnByValue": True}
         )
-        value = result.get("result", {}).get("value", 0)
-        return int(value or 0)
+        value = result.get("result", {}).get("value")
+        if value is None:
+            return None
+        return int(value)
     except Exception as exc:
         logger.debug("Mutation guard read failed: %s", exc)
         return None
@@ -1806,6 +2142,12 @@ async def _assert_postcondition(bridge: CDPBridge, postcondition: Any) -> None:
     if not isinstance(postcondition, dict):
         raise TypeError("postcondition must be a dict, callable, or None")
 
+    # Only TERX's declarative checks are evaluated. An unknown key (including
+    # the removed ``js`` check) fails closed instead of running page script.
+    unsupported = sorted(set(postcondition) - REPLAY_CONDITION_KEYS)
+    if unsupported:
+        raise ValueError(f"unsupported condition checks: {', '.join(map(str, unsupported))}")
+
     checks: list[tuple[str, bool]] = []
     if "url_contains" in postcondition:
         expected = postcondition["url_contains"]
@@ -1844,12 +2186,6 @@ async def _assert_postcondition(bridge: CDPBridge, postcondition: Any) -> None:
             "Runtime.evaluate", {"expression": expression, "returnByValue": True}
         )
         checks.append(("selector_exists", bool(result.get("result", {}).get("value"))))
-
-    if expression := postcondition.get("js"):
-        result = await bridge.send_internal(
-            "Runtime.evaluate", {"expression": str(expression), "returnByValue": True}
-        )
-        checks.append(("js", bool(result.get("result", {}).get("value"))))
 
     if not checks:
         return

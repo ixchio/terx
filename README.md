@@ -263,9 +263,14 @@ is free.
 - A saved tool stores only its input names and scope digest. Its live result is
   returned to the current caller and is not written into the replay cache.
 - Password, token, key, and similar named fields are redacted at cache and
-  audit boundaries. Cached response payloads are not retained.
-- Scope IDs are represented by a digest in the cache; scope is verified before
-  lookup and replay.
+  audit boundaries. Cached response payloads are not retained, and end-state
+  screenshots are stored only with `MemoryCache(visual_audit=True)`.
+- Scope IDs are stored as a keyed HMAC digest (key in `.terx/scope.key`), so a
+  listed digest cannot be reversed by guessing. A scope is a namespace the
+  caller asserts, not an authentication credential.
+- MCP clients can replace or delete a saved tool, or invalidate cached
+  workflows, only for a scope they present; a tool can be saved only for a
+  live recorded workflow.
 - The experimental `SelfHealer` is disabled by default and is never called by
   a replay. Enabling it can send the supplied diagnostic request to a LiteLLM
   provider.

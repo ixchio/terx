@@ -11,7 +11,9 @@ import asyncio
 import base64
 import collections
 import hashlib
+import hmac
 import logging
+import sys
 import time
 from urllib.parse import urlparse
 
@@ -39,14 +41,24 @@ from terx.tools import (
 )
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 # ------------------------------------------------------------------ #
 # URL Security — scheme-first validation                               #
 # ------------------------------------------------------------------ #
 
-BLOCKED_SCHEMES = {"data", "javascript", "blob", "file", "vbscript"}
-ALLOWED_SCHEMES = {"http", "https", "about", "chrome"}
+BLOCKED_SCHEMES = {
+    "data",
+    "javascript",
+    "blob",
+    "file",
+    "vbscript",
+    # Browser-internal pages can change settings, flags, or extensions.
+    "chrome",
+    "chrome-extension",
+    "devtools",
+    "view-source",
+}
+ALLOWED_SCHEMES = {"http", "https", "about"}
 
 
 def _validate_url(url: str) -> str | None:
@@ -61,6 +73,9 @@ def _validate_url(url: str) -> str | None:
         return f"Blocked: '{scheme}:' URLs are not allowed (security policy)"
     if scheme and scheme not in ALLOWED_SCHEMES:
         return f"Blocked: unknown URL scheme '{scheme}:'"
+    if scheme == "about" and url.strip().lower() != "about:blank":
+        # Chrome maps about:flags, about:settings, ... to chrome:// pages.
+        return "Blocked: only about:blank is allowed"
     if not scheme and not url.startswith("/"):
         return "Blocked: URL must have a scheme (http:// or https://)"
     return None
@@ -178,6 +193,12 @@ class TERXServer:
             )
         return self._session
 
+    def _scope_matches(self, manifest: SavedTool, scope_id: str) -> bool:
+        """Check a caller's raw scope against a manifest's keyed digest."""
+        self._cache.adopt_legacy_scope(scope_id)
+        current = self._cache.get_tool(manifest.name) or manifest
+        return hmac.compare_digest(self._cache.scope_digest(scope_id), current.scope_hash)
+
     async def _run_saved_tool(
         self,
         name: str,
@@ -196,12 +217,19 @@ class TERXServer:
             return {"success": False, "tool": name, "error": str(exc)}
         if not isinstance(scope_id, str) or not scope_id:
             return {"success": False, "tool": name, "error": "scope_id is required."}
-        if ReplayPolicy(scope_id=scope_id).scope_hash() != manifest.scope_hash:
+        if not self._scope_matches(manifest, scope_id):
             return {
                 "success": False,
                 "tool": name,
                 "refused": True,
                 "error": "scope_id does not match this saved tool.",
+            }
+        if self._task_ctx is not None:
+            return {
+                "success": False,
+                "tool": name,
+                "refused": True,
+                "error": "A browser task is recording; finish it before running a saved tool.",
             }
 
         await self._ensure_connected()
@@ -390,7 +418,12 @@ class TERXServer:
                 }
             except Exception as exc:
                 await ctx.__aexit__(type(exc), exc, exc.__traceback__)
-                return {"success": False, "task": task, "error": str(exc)}
+                return {
+                    "success": False,
+                    "task": task,
+                    "error": str(exc),
+                    "report": ctx.report.as_dict() if ctx.report else None,
+                }
 
         @self.mcp.tool()
         async def browser_task_finish(success: bool = True) -> dict:
@@ -409,7 +442,7 @@ class TERXServer:
                 await ctx.__aexit__(None, None, None)
                 return {
                     "success": True,
-                    "cached": bool(ctx.report and ctx.report.status == "miss" and recorded > 0),
+                    "cached": ctx.stored,
                     "commands_recorded": recorded,
                     "ledger": str(ctx.ledger) if ctx.ledger else None,
                     "report": ctx.report.as_dict() if ctx.report else None,
@@ -445,17 +478,23 @@ class TERXServer:
             """Save a reviewed, already-recorded workflow as a discoverable MCP tool.
 
             Save this only after ``browser_task_finish(success=true)`` recorded
-            the matching workflow. TERX stores the scope digest and input names,
-            never the raw scope or input values. Result rules can only read page
-            text, title, URL, or echo a non-sensitive input.
+            the matching workflow; TERX refuses a manifest with no live recorded
+            workflow for the same task, scope, version, and policy. Replacing an
+            existing tool requires that tool's own scope_id. TERX stores the
+            scope digest and input names, never the raw scope or input values.
+            Result rules can only read page text, title, URL, or echo a
+            non-sensitive input.
             """
+            if not isinstance(scope_id, str) or not scope_id:
+                return {"success": False, "error": "scope_id is required."}
+            self._cache.adopt_legacy_scope(scope_id)
             try:
                 manifest = SavedTool(
                     name=name,
                     description=description,
                     task=task,
                     input_names=tuple(input_names),
-                    scope_hash=ReplayPolicy(scope_id=scope_id).scope_hash(),
+                    scope_hash=self._cache.scope_digest(scope_id),
                     precondition=precondition,
                     postcondition=postcondition,
                     route_pattern=route_pattern,
@@ -466,6 +505,36 @@ class TERXServer:
                     mutation_threshold=mutation_threshold,
                     result_spec=result_spec,
                 )
+                existing = self._cache.get_tool(name)
+                if existing is not None and replace and not self._scope_matches(existing, scope_id):
+                    return {
+                        "success": False,
+                        "refused": True,
+                        "error": "Only a caller with the existing tool's scope_id can replace it.",
+                    }
+                policy = ReplayPolicy(
+                    scope_id=scope_id,
+                    route_pattern=route_pattern,
+                    workflow_version=workflow_version,
+                    side_effect=side_effect,
+                    precondition=precondition,
+                    postcondition=postcondition,
+                    ttl_seconds=ttl_seconds,
+                )
+                if not self._cache.has_workflow(
+                    manifest.task,
+                    scope_hash=manifest.scope_hash,
+                    workflow_version=workflow_version,
+                    policy_fingerprint=policy.fingerprint(),
+                ):
+                    return {
+                        "success": False,
+                        "refused": True,
+                        "error": (
+                            "No live recorded workflow matches this task, scope, version, "
+                            "and policy. Record it with browser_task_start/finish first."
+                        ),
+                    }
                 self._cache.save_tool(manifest, replace=replace)
             except (ToolManifestError, ValueError, TypeError) as exc:
                 return {"success": False, "error": str(exc)}
@@ -498,8 +567,22 @@ class TERXServer:
             )
 
         @self.mcp.tool()
-        async def browser_tool_delete(name: str) -> dict:
-            """Remove a saved tool manifest; its historical replay record is retained."""
+        async def browser_tool_delete(name: str, scope_id: str) -> dict:
+            """Remove a saved tool manifest; its historical replay record is retained.
+
+            Requires the tool's own scope_id, so one MCP client cannot delete
+            another tenant's tools.
+            """
+            manifest = self._cache.get_tool(name)
+            if manifest is None:
+                return {"success": False, "tool": name, "error": "Saved tool does not exist."}
+            if not isinstance(scope_id, str) or not self._scope_matches(manifest, scope_id):
+                return {
+                    "success": False,
+                    "tool": name,
+                    "refused": True,
+                    "error": "scope_id does not match this saved tool.",
+                }
             return {"success": self._cache.delete_tool(name), "tool": name}
 
         @self.mcp.tool()
@@ -784,21 +867,33 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def cache_invalidate(domain: str) -> dict:
-            """Clear cached sequences for a domain (use when the site UI changed)."""
-            deleted = self._cache.invalidate(domain)
-            return {"domain": domain, "sequences_deleted": deleted}
+        async def cache_invalidate(domain: str, scope_id: str) -> dict:
+            """Clear one scope's cached sequences for a domain (after a UI change).
+
+            Only the caller's own scope is cleared. Operators can purge a whole
+            domain locally with ``terx purge <domain>``.
+            """
+            if not isinstance(scope_id, str) or not scope_id:
+                return {"success": False, "error": "scope_id is required."}
+            self._cache.adopt_legacy_scope(scope_id)
+            deleted = self._cache.invalidate(domain, scope_hash=self._cache.scope_digest(scope_id))
+            return {"success": True, "domain": domain, "sequences_deleted": deleted}
 
     def run(self) -> None:
-        """Entry point: run the MCP server."""
-        print("TERX MCP Server starting...")
-        print("   Connect Chrome: google-chrome --remote-debugging-port=9222")
-        print("   Connect MCP client: add terx-server to your MCP config\n")
+        """Entry point: run the MCP server.
+
+        stdout carries the stdio JSON-RPC stream, so human-readable output
+        must go to stderr or it corrupts the protocol for MCP clients.
+        """
+        print("TERX MCP Server starting...", file=sys.stderr)
+        print("   Connect Chrome: google-chrome --remote-debugging-port=9222", file=sys.stderr)
+        print("   Connect MCP client: add terx-server to your MCP config\n", file=sys.stderr)
         self.mcp.run()
 
 
 def main() -> None:
     """Entry point: terx-server"""
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     server = TERXServer()
     server.run()
 

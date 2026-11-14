@@ -17,7 +17,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from terx.cache.cache import ApprovalDecision, MemoryCache, ReplayPolicy, session_for
+from terx.cache.cache import ApprovalDecision, MemoryCache, session_for
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 from terx.integrations.workflow import TerxWorkflow
@@ -404,7 +404,7 @@ async def _run_saved_tool_case(
             description="Return the local vendor order status for an account and order ID.",
             task=task,
             input_names=("account_id", "order_id"),
-            scope_hash=ReplayPolicy(scope_id=scope_id).scope_hash(),
+            scope_hash=cache.scope_digest(scope_id),
             precondition={"url_contains": base_url},
             postcondition=postcondition,
             route_pattern="/slow",
