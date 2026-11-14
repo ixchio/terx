@@ -42,6 +42,10 @@ the MCP server, and removes experimental code. See the
 
 ### Fixed
 
+- The local and hard evals now let Chrome choose its own DevTools port (read
+  from `DevToolsActivePort`) instead of reserving one in advance, and wait up
+  to 30 seconds for startup (`TERX_CHROME_STARTUP_TIMEOUT`). A fixed 10-second
+  wait made CI fail when a runner started Chrome slowly.
 - A variable in a URL path was frozen at record time, so replaying "open order
   B-200" reopened A-100 and still reported success.
 - MCP recordings could not identify targets on any page after the first

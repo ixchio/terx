@@ -125,7 +125,7 @@ terx eval-local
 terx eval-hard --gate
 ```
 
-On the release commit: 98 tests pass, `mypy --strict` reports no issues in 28
+On the release commit: 101 tests pass, `mypy --strict` reports no issues in 28
 source files, `terx eval-local` replays 5/5 tasks, and `terx eval-hard --gate`
 reports the numbers above. CI runs all of these on Python 3.11, 3.12, and 3.13.
 
