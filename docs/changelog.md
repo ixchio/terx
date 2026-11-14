@@ -4,6 +4,53 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- Scope digests are now HMAC-SHA256 with a random local key
+  (`.terx/scope.key`, mode 0600, or `MemoryCache(scope_key=...)`). The unkeyed
+  SHA-256 digest exposed by `browser_tool_list` and `terx inspect` could be
+  reversed by guessing likely scope IDs. Legacy entries are re-keyed the first
+  time a caller presents their scope. `ReplayApprovalRequest.scope_hash` is
+  unchanged.
+- MCP: `browser_tool_save` refuses a manifest without a matching live recorded
+  workflow, and `replace=True` requires the existing tool's scope.
+  `browser_tool_delete` and `cache_invalidate` now require `scope_id`, and
+  `cache_invalidate` clears only that scope (`terx purge` still clears a whole
+  domain). `browser_tool_run` is refused while a task is recording.
+- End-of-workflow screenshots are no longer written by default. They were saved
+  to `.terx/screenshots/` relative to the working directory, named by page
+  structure (shared across tenants) and could contain page data. Opt in with
+  `MemoryCache(visual_audit=True)`; baselines are then owner-only files under
+  the cache directory, named by the full scoped replay identity.
+- Removed the undocumented `js` condition, which evaluated arbitrary script on
+  the cold path. Unknown condition keys now raise `ValueError`.
+- MCP navigation now blocks `chrome:`, `chrome-extension:`, `devtools:`,
+  `view-source:`, and `about:` pages other than `about:blank` (Chrome maps
+  `about:flags` and similar to `chrome://`).
+
+### Fixed
+
+- An expired workflow, or one whose policy changed without a
+  `workflow_version` bump, is now replaced by the next successful recording.
+  Previously `INSERT OR IGNORE` kept the dead row, so the workflow could never
+  be cached again. `MemoryCache.store()` now returns whether it wrote, and
+  `browser_task_finish` reports `cached` from that result.
+- Replay validates every cached action and every required variable before the
+  first action runs and before a destructive approval is consumed, instead of
+  refusing after earlier steps already changed the page.
+- Replay now waits: a missing semantic target is polled (an ambiguous one still
+  refuses at once), a click waits for any started load, and the postcondition is
+  polled. The limit is `replay_timeout` (default 10s) on `session_for`.
+- The mutation guard is checked and reinstalled after every replay step, so it
+  survives navigation and stops the sequence before the next action instead of
+  only alarming after all actions ran. Drift and postcondition failures now set
+  `status="failed"` with a report.
+- `terx-server` writes its startup banner and logs to stderr, keeping stdout
+  clean for the stdio JSON-RPC stream, and no longer configures logging on
+  import.
+
 ## [0.5.3] - 2026-10-01
 
 ### Fixed

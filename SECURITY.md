@@ -52,9 +52,25 @@ persisted in the cache's policy summary.
 - Password, token, key, card, and other configured sensitive field names are
   redacted at persistence and audit boundaries. `TERX_REDACT_FIELDS` extends
   this label policy.
-- Scope IDs are stored as a SHA-256 digest, not plaintext. A digest is an
-  identifier, not a substitute for a secret; use an opaque, high-entropy scope
-  ID if disclosure of the identifier matters.
+- Scope IDs are stored as an HMAC-SHA256 digest keyed by a random local key
+  (`.terx/scope.key`, mode 0600), so a digest shown by `browser_tool_list` or
+  `terx inspect` cannot be reversed by guessing likely scopes. Processes that
+  share a cache must share the key (or pass `MemoryCache(scope_key=...)`).
+  Entries written by earlier releases with an unkeyed SHA-256 digest are
+  re-keyed the first time a caller presents that scope.
+- A scope ID is a namespace the caller asserts, not an authentication
+  credential. Any MCP client that knows a scope ID can use that scope; use an
+  opaque, high-entropy scope ID where that matters.
+- MCP clients can only replace or delete a saved tool, or invalidate cached
+  workflows, for a scope they present. A tool can only be saved when a live
+  recorded workflow matches its task, scope, version, and policy.
+- End-of-workflow screenshots are not stored by default. `MemoryCache(
+  visual_audit=True)` opts in; baselines then go under the cache directory as
+  owner-only files named by a digest of the full scoped replay identity.
+- Conditions accept only `url_contains`, `title_contains`, `text_contains`, and
+  `selector_exists`; any other key fails closed rather than running script.
+  MCP navigation refuses browser-internal pages (`chrome:`, `devtools:`,
+  `chrome-extension:`, `view-source:`, and `about:` other than `about:blank`).
 
 ## Network egress
 
