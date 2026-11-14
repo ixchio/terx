@@ -112,11 +112,11 @@ def _replay_command_digest(commands: list[CDPCommand]) -> str:
 
 def _prepare_recorded_params(
     method: str,
-    params: dict,
+    params: dict[str, Any],
     active_node_info: dict[str, str] | None,
     variables: dict[str, Any],
     redact_secrets: bool,
-) -> tuple[dict, dict]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Replace variable values and sensitive text with placeholders before caching."""
     metadata: dict[str, Any] = {}
     if method != "Input.insertText" or "text" not in params:

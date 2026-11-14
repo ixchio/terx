@@ -9,9 +9,11 @@ import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any
 from threading import Thread
 
 from terx.cache import MemoryCache, session_for
+from terx.cdp.bridge import CDPBridge
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
 
@@ -50,13 +52,13 @@ HTML = """<!doctype html>
 
 
 class DemoHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def do_GET(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
         self.wfile.write(HTML.encode())
 
-    def log_message(self, *_):
+    def log_message(self, *_: Any) -> None:
         return
 
 
@@ -74,7 +76,7 @@ def _chrome_binary() -> str:
     raise RuntimeError("Chrome/Chromium not found")
 
 
-async def _fill_login(bridge, email: str, password: str) -> None:
+async def _fill_login(bridge: CDPBridge, email: str, password: str) -> None:
     snapshot = await DOMExtractor().snapshot(bridge)
     email_el = snapshot.find_by_label("Email")
     password_el = snapshot.find_by_label("Password")

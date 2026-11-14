@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 
+SideEffect = Literal["read_only", "mutating", "destructive"]
 SIDE_EFFECTS = {"read_only", "mutating", "destructive"}
 
 
@@ -48,7 +49,7 @@ class ReplayPolicy:
     scope_id: str | None = None
     route_pattern: str | None = None
     workflow_version: int = 1
-    side_effect: Literal["read_only", "mutating", "destructive"] = "mutating"
+    side_effect: SideEffect = "mutating"
     precondition: dict[str, Any] | None = None
     postcondition: dict[str, Any] | None = None
     ttl_seconds: int | None = 86_400

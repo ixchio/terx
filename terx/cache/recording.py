@@ -7,7 +7,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Literal
+from typing import Any, NoReturn
 from urllib.parse import urlparse
 
 from terx.cdp.bridge import CDPBridge
@@ -20,6 +20,7 @@ from terx.cache.errors import (
     ReplayRefused,
 )
 from terx.cache.policy import (
+    SideEffect,
     ApprovalDecision,
     ApprovalVerifier,
     REPLAY_ACTIONS,
@@ -74,7 +75,7 @@ class RecordingContext:
         scope_id: str | None = None,
         route_pattern: str | None = None,
         workflow_version: int = 1,
-        side_effect: Literal["read_only", "mutating", "destructive"] = "mutating",
+        side_effect: SideEffect = "mutating",
         precondition: dict[str, Any] | None = None,
         postcondition: dict[str, Any] | Any | None = None,
         ttl_seconds: int | None = 86_400,
@@ -203,13 +204,14 @@ class RecordingContext:
                     # so accumulate after every step and reinstall it. Drift
                     # stops the sequence before the next action runs.
                     step_count = await _read_mutation_count(self._bridge)
-                    mutation_count += step_count or 0
-                    if mutation_count > self._mutation_threshold:
+                    total_mutations = (mutation_count or 0) + (step_count or 0)
+                    mutation_count = total_mutations
+                    if total_mutations > self._mutation_threshold:
                         self._fail(
-                            f"mutation drift: {mutation_count} DOM changes exceeded "
+                            f"mutation drift: {total_mutations} DOM changes exceeded "
                             f"threshold {self._mutation_threshold}"
                         )
-                        raise MutationDriftError(mutation_count, self._mutation_threshold)
+                        raise MutationDriftError(total_mutations, self._mutation_threshold)
                     await _start_mutation_guard(self._bridge)
 
             try:
@@ -271,7 +273,7 @@ class RecordingContext:
             was_cache_hit=True,
         )
 
-    def _refuse(self, reason: str) -> None:
+    def _refuse(self, reason: str) -> NoReturn:
         self.decision.status = "refused"
         self.decision.reasons = [reason]
         self.report = ReplayReport(
@@ -306,8 +308,12 @@ class RecordingContext:
         """Require a host to validate and consume a destructive replay approval."""
         if not isinstance(approval_token, str) or not approval_token.strip():
             self._refuse("destructive replay requires approval_token")
-        if self._approval_verifier is None:
+        verifier = self._approval_verifier
+        if verifier is None:
             self._refuse("destructive replay requires an approval_verifier")
+        cached = self._cached_seq
+        if cached is None:
+            self._refuse("no cached sequence to approve")
 
         request = ReplayApprovalRequest(
             token=approval_token,
@@ -317,12 +323,12 @@ class RecordingContext:
             policy_fingerprint=self._policy.fingerprint(),
             origin=self._origin,
             route_pattern=self._route_pattern,
-            structural_hash=self._cached_seq.structural_hash,
-            command_digest=_replay_command_digest(self._cached_seq.commands),
+            structural_hash=cached.structural_hash,
+            command_digest=_replay_command_digest(cached.commands),
             requested_at=time.time(),
         )
         try:
-            decision = self._approval_verifier(request)
+            decision = verifier(request)
             if inspect.isawaitable(decision):
                 decision = await decision
         except Exception as exc:
@@ -342,7 +348,9 @@ class RecordingContext:
             return
         self._recorded_commands.append(cmd)
 
-    def _auto_record(self, method: str, params: dict, result: dict, latency: float) -> None:
+    def _auto_record(
+        self, method: str, params: dict[str, Any], result: dict[str, Any], latency: float
+    ) -> None:
         """Translate known CDP gestures into safe semantic replay actions."""
         if method == "Page.navigate":
             url = params.get("url")
@@ -518,6 +526,8 @@ class RecordingContext:
                 self.decision.status = "refused"
                 self.decision.reasons = reasons
             else:
+                if self._snapshot is None:
+                    raise RuntimeError("RecordingContext was not entered")
                 self._stored = self._cache.store(
                     domain=self._domain,
                     structural_hash=self._snapshot.structural_hash,
@@ -575,7 +585,7 @@ def session_for(
     scope_id: str | None = None,
     route_pattern: str | None = None,
     workflow_version: int = 1,
-    side_effect: Literal["read_only", "mutating", "destructive"] = "mutating",
+    side_effect: SideEffect = "mutating",
     precondition: dict[str, Any] | None = None,
     postcondition: dict[str, Any] | Any | None = None,
     ttl_seconds: int | None = 86_400,

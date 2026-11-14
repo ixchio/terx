@@ -43,7 +43,7 @@ class BrowserSession:
 
         self._bridges: dict[str, CDPBridge] = {}  # target_id → bridge
         self._active_target: str | None = None
-        self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                             #
@@ -95,7 +95,7 @@ class BrowserSession:
         """Open a new tab. Returns the target_id."""
         bridge = self.bridge()
         result = await bridge.send("Target.createTarget", {"url": url})
-        target_id = result["targetId"]
+        target_id = str(result["targetId"])
         await self._connect_target(target_id)
         self._active_target = target_id
         return target_id
@@ -125,18 +125,21 @@ class BrowserSession:
     # Internal helpers                                                      #
     # ------------------------------------------------------------------ #
 
-    async def _fetch_targets(self) -> list[dict]:
+    async def _fetch_targets(self) -> list[dict[str, Any]]:
         """GET http://host:port/json/list and return the targets."""
         url = f"http://{self.host}:{self.port}/json/list"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    return await resp.json()
+                    data = await resp.json()
         except Exception as exc:
             raise RuntimeError(
                 f"Cannot reach Chrome at {url}. "
                 "Is Chrome running with --remote-debugging-port=9222?"
             ) from exc
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected response from {url}: expected a target list")
+        return [target for target in data if isinstance(target, dict)]
 
     async def _connect_target(self, target_id: str) -> CDPBridge:
         """Connect a CDPBridge to a specific target and register it."""
@@ -165,7 +168,9 @@ class BrowserSession:
         while True:
             await asyncio.sleep(self.heartbeat_interval)
             target_id = self._active_target
-            bridge = self._bridges.get(target_id) if target_id else None
+            if target_id is None:
+                continue
+            bridge = self._bridges.get(target_id)
             if bridge is None:
                 continue
             try:

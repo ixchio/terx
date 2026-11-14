@@ -20,10 +20,10 @@ class CDPCommand:
     """
 
     method: str
-    params: dict
-    result: dict
+    params: dict[str, Any]
+    result: dict[str, Any]
     latency_ms: float
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass

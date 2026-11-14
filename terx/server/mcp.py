@@ -27,7 +27,7 @@ except ImportError:
 
 from terx.cache.actions import click_element, replace_field_text
 from terx.cache.errors import ReplayRefused
-from terx.cache.policy import ApprovalVerifier, ReplayPolicy
+from terx.cache.policy import ApprovalVerifier, ReplayPolicy, SideEffect
 from terx.cache.recording import RecordingContext, session_for
 from terx.cache.storage import MemoryCache
 from terx.cdp.session import BrowserSession
@@ -194,7 +194,9 @@ class TERXServer:
             )
         return self._session
 
-    def _exclusive(self, fn: Callable[..., Awaitable[dict]]) -> Callable[..., Awaitable[dict]]:
+    def _exclusive(
+        self, fn: Callable[..., Awaitable[dict[str, Any]]]
+    ) -> Callable[..., Awaitable[dict[str, Any]]]:
         """Allow one task start/finish/saved-tool run at a time.
 
         Each of these awaits browser work between checking and changing the
@@ -204,7 +206,7 @@ class TERXServer:
         """
 
         @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> dict:
+        async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
             if self._task_operation_running:
                 return {
                     "success": False,
@@ -232,7 +234,7 @@ class TERXServer:
         scope_id: str,
         *,
         replay_approval: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Replay one manifest and return newly extracted, non-persisted output."""
         manifest = self._cache.get_tool(name)
         if manifest is None:
@@ -340,16 +342,16 @@ class TERXServer:
             task: str,
             variables: dict[str, str] | None = None,
             scope_id: str | None = None,
-            precondition: dict | None = None,
-            postcondition: dict | None = None,
+            precondition: dict[str, Any] | None = None,
+            postcondition: dict[str, Any] | None = None,
             route_pattern: str | None = None,
             workflow_version: int = 1,
-            side_effect: str = "mutating",
+            side_effect: SideEffect = "mutating",
             ttl_seconds: int | None = 86_400,
             replay_approval: str | None = None,
             mutation_guard: bool = True,
             mutation_threshold: int = 20,
-        ) -> dict:
+        ) -> dict[str, Any]:
             """
             Start a cacheable browser task.
             If TERX has seen this task on this DOM before, it replays immediately.
@@ -454,7 +456,7 @@ class TERXServer:
 
         @self.mcp.tool()
         @self._exclusive
-        async def browser_task_finish(success: bool = True) -> dict:
+        async def browser_task_finish(success: bool = True) -> dict[str, Any]:
             """
             Finish the active cacheable browser task.
             Successful tasks are stored; failed/aborted tasks are discarded.
@@ -492,17 +494,17 @@ class TERXServer:
             task: str,
             input_names: list[str],
             scope_id: str,
-            precondition: dict,
-            postcondition: dict,
+            precondition: dict[str, Any],
+            postcondition: dict[str, Any],
             result_spec: dict[str, dict[str, str]],
             route_pattern: str | None = None,
             workflow_version: int = 1,
-            side_effect: str = "mutating",
+            side_effect: SideEffect = "mutating",
             ttl_seconds: int | None = 86_400,
             mutation_guard: bool = True,
             mutation_threshold: int = 20,
             replace: bool = False,
-        ) -> dict:
+        ) -> dict[str, Any]:
             """Save a reviewed, already-recorded workflow as a discoverable MCP tool.
 
             Save this only after ``browser_task_finish(success=true)`` recorded
@@ -573,7 +575,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_tool_list() -> dict:
+        async def browser_tool_list() -> dict[str, Any]:
             """Discover saved TERX tools and their exact public input/result schemas."""
             return {"tools": [tool.as_dict() for tool in self._cache.list_tools()]}
 
@@ -584,7 +586,7 @@ class TERXServer:
             inputs: dict[str, str],
             scope_id: str,
             replay_approval: str | None = None,
-        ) -> dict:
+        ) -> dict[str, Any]:
             """Run a saved tool with current inputs and return fresh page output.
 
             This never starts a cold agent path. It either replays the exact
@@ -596,7 +598,7 @@ class TERXServer:
             )
 
         @self.mcp.tool()
-        async def browser_tool_delete(name: str, scope_id: str) -> dict:
+        async def browser_tool_delete(name: str, scope_id: str) -> dict[str, Any]:
             """Remove a saved tool manifest; its historical replay record is retained.
 
             Requires the tool's own scope_id, so one MCP client cannot delete
@@ -615,7 +617,7 @@ class TERXServer:
             return {"success": self._cache.delete_tool(name), "tool": name}
 
         @self.mcp.tool()
-        async def browser_get_state() -> dict:
+        async def browser_get_state() -> dict[str, Any]:
             """
             Get the current page state: URL, title, and all interactable elements.
             Call this first before any click or type action.
@@ -642,7 +644,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_navigate(url: str) -> dict:
+        async def browser_navigate(url: str) -> dict[str, Any]:
             """Navigate to a URL. Returns the new page title."""
             error = _validate_url(url)
             if error:
@@ -666,7 +668,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_click(element_id: int) -> dict:
+        async def browser_click(element_id: int) -> dict[str, Any]:
             """
             Click an element by its ID (from browser_get_state).
             Returns success status and new page state summary.
@@ -700,7 +702,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_click_at(element_id: int) -> dict:
+        async def browser_click_at(element_id: int) -> dict[str, Any]:
             """
             Fallback physical click by element center.
             Prefer browser_click; this is for pages that require mouse coordinates.
@@ -751,7 +753,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_type(element_id: int, text: str) -> dict:
+        async def browser_type(element_id: int, text: str) -> dict[str, Any]:
             """
             Replace an input field's value with text, by element ID.
             Existing contents (autofill, prefilled values) are replaced, not
@@ -775,7 +777,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_screenshot() -> dict:
+        async def browser_screenshot() -> dict[str, Any]:
             """
             Capture a screenshot.
             Returns a hash reference — NOT a raw base64 blob (prevents context poisoning).
@@ -804,7 +806,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_screenshot_get(ref: str) -> dict:
+        async def browser_screenshot_get(ref: str) -> dict[str, Any]:
             """
             Retrieve a screenshot by hash reference (from browser_screenshot).
             Returns base64-encoded PNG.
@@ -820,7 +822,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def browser_scroll(direction: str = "down", amount: int = 300) -> dict:
+        async def browser_scroll(direction: str = "down", amount: int = 300) -> dict[str, Any]:
             """Scroll the page. direction: 'up' | 'down'. amount: pixels."""
             await self._ensure_connected()
             session = self._get_session()
@@ -858,7 +860,7 @@ class TERXServer:
             return {"scrolled": direction, "pixels": amount}
 
         @self.mcp.tool()
-        async def browser_new_tab(url: str = "about:blank") -> dict:
+        async def browser_new_tab(url: str = "about:blank") -> dict[str, Any]:
             """Open a new browser tab. Returns the target ID."""
             error = _validate_url(url)
             if error:
@@ -870,7 +872,7 @@ class TERXServer:
             return {"target_id": target_id, "url": url}
 
         @self.mcp.tool()
-        async def cache_stats() -> dict:
+        async def cache_stats() -> dict[str, Any]:
             """Show TERX memory cache statistics."""
             stats = self._cache.stats()
             return {
@@ -882,7 +884,7 @@ class TERXServer:
             }
 
         @self.mcp.tool()
-        async def cache_invalidate(domain: str, scope_id: str) -> dict:
+        async def cache_invalidate(domain: str, scope_id: str) -> dict[str, Any]:
             """Clear one scope's cached sequences for a domain (after a UI change).
 
             Only the caller's own scope is cleared. Operators can purge a whole
@@ -934,7 +936,7 @@ def _get_default_server() -> TERXServer:
 
 # mcp is a module-level name expected by tests and external integrations.
 # Resolved lazily via __getattr__ below so we don't instantiate on import.
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name == "mcp":
         return _get_default_server().mcp
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

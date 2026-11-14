@@ -13,13 +13,13 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
 from terx.cache.actions import click_element, replace_field_text
 from terx.cache.conditions import _assert_postcondition
 from terx.cache.errors import ReplayRefused
 from terx.cache.models import CDPCommand, ReplayCostLedger, ReplayReport
-from terx.cache.policy import ApprovalVerifier, _is_replayable_url
+from terx.cache.policy import ApprovalVerifier, SideEffect, _is_replayable_url
 from terx.cache.recording import RecordingContext, session_for
 from terx.cache.storage import MemoryCache
 from terx.cdp.bridge import CDPBridge
@@ -191,7 +191,7 @@ class TerxWorkflow:
         variables: dict[str, Any] | None = None,
         route_pattern: str | None = None,
         workflow_version: int = 1,
-        side_effect: Literal["read_only", "mutating", "destructive"] = "mutating",
+        side_effect: SideEffect = "mutating",
         ttl_seconds: int | None = 86_400,
         mutation_guard: bool = True,
         mutation_threshold: int = 20,
@@ -214,7 +214,7 @@ class TerxWorkflow:
 
     async def run(
         self,
-        cold_path: Callable[[TerxActions], Awaitable[T] | T] | None,
+        cold_path: Callable[[TerxActions], Any] | None,
         *,
         variables: dict[str, Any] | None = None,
         result_reader: Callable[[CDPBridge], Awaitable[Any] | Any] | None = None,

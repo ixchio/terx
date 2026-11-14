@@ -537,7 +537,7 @@ class MemoryCache:
                 return True
         return False
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         """Return cache statistics."""
         with self._db_lock:
             db = self._ensure_db()

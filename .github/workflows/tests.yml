@@ -30,8 +30,12 @@ jobs:
 
     - name: Lint with Ruff
       run: |
-        pip install "ruff==0.15.11"
         ruff check .
+        ruff format --check .
+
+    - name: Type check with mypy (strict)
+      run: |
+        mypy
 
     - name: Run tests with pytest
       run: |

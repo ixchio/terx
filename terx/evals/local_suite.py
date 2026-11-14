@@ -17,10 +17,17 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from terx.cache import ApprovalDecision, MemoryCache, session_for
+from terx.cache import (
+    ApprovalDecision,
+    ApprovalVerifier,
+    MemoryCache,
+    ReplayApprovalRequest,
+    session_for,
+)
+from terx.cache.policy import SideEffect
 from terx.cdp.session import BrowserSession
 from terx.dom.extractor import DOMExtractor
-from terx.integrations.workflow import TerxWorkflow
+from terx.integrations.workflow import TerxActions, TerxWorkflow, WorkflowRunResult
 from terx.server.mcp import TERXServer
 from terx.tools import SavedTool
 
@@ -237,7 +244,7 @@ async def _run_case(
     cold_variables: dict[str, str],
     warm_variables: dict[str, str],
     postcondition: dict[str, str],
-    side_effect: str,
+    side_effect: SideEffect,
     runner: Callable[[Any, dict[str, str]], Awaitable[None]],
 ) -> EvalCaseResult:
     approval_verifier = _local_approval_verifier() if side_effect == "destructive" else None
@@ -303,7 +310,7 @@ async def _run_workflow_adapter_case(
     task = "login through TERX workflow adapter"
     postcondition = {"text_contains": "Welcome"}
 
-    async def run_once(variables: dict[str, str]):
+    async def run_once(variables: dict[str, str]) -> tuple[WorkflowRunResult, float]:
         await bridge.send_internal("Page.navigate", {"url": base_url})
         await bridge.wait_for_load()
         workflow = TerxWorkflow(
@@ -316,7 +323,7 @@ async def _run_workflow_adapter_case(
             postcondition=postcondition,
         )
 
-        async def cold_path(browser):
+        async def cold_path(browser: TerxActions) -> None:
             await browser.type_into("textbox", "Email", "email")
             await browser.type_into("textbox", "Password", "password")
             await browser.click("button", "Login")
@@ -384,7 +391,7 @@ async def _run_saved_tool_case(
             side_effect="read_only",
         )
 
-        async def cold_path(browser):
+        async def cold_path(browser: TerxActions) -> None:
             await browser.type_into("textbox", "Account ID", "account_id")
             await browser.type_into("textbox", "Order ID", "order_id")
             await browser.click("button", "Check Order Status")
@@ -506,11 +513,11 @@ async def _approve_invoice(bridge: Any, _: dict[str, str]) -> None:
     await _click(bridge, "Approve Invoice")
 
 
-def _local_approval_verifier():
+def _local_approval_verifier() -> ApprovalVerifier:
     """Test-only consume-once approval authority for the destructive eval."""
     consumed: set[str] = set()
 
-    def verify_and_consume(request):
+    def verify_and_consume(request: ReplayApprovalRequest) -> ApprovalDecision:
         if request.token != "local-eval-approved":
             return ApprovalDecision(False, False, "unknown local approval")
         if request.token in consumed:
