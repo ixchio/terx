@@ -6,6 +6,14 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ## [Unreleased]
 
+### Added
+
+- `.github/workflows/publish.yml` publishes a GitHub Release to PyPI, or an
+  existing tag when run by hand. It refuses a tag that does not match the
+  package version, uploads the files attached to the release (so PyPI gets the
+  files whose checksums the release notes list), and authenticates with a
+  `PYPI_API_TOKEN` secret or, without one, PyPI trusted publishing.
+
 ## [1.0.0] - 2026-11-14
 
 TERX 1.0 commits to a stable public API under
