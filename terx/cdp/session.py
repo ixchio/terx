@@ -140,6 +140,11 @@ class BrowserSession:
 
     async def _connect_target(self, target_id: str) -> CDPBridge:
         """Connect a CDPBridge to a specific target and register it."""
+        existing = self._bridges.get(target_id)
+        if existing is not None:
+            await existing.reconnect()
+            self._active_target = target_id
+            return existing
         ws_url = f"ws://{self.host}:{self.port}/devtools/page/{target_id}"
         bridge = CDPBridge(ws_url, connect_timeout=self.connect_timeout)
         await bridge.connect()
@@ -150,28 +155,44 @@ class BrowserSession:
     async def _heartbeat(self) -> None:
         """
         Ping Chrome every N seconds to detect dropped connections.
-        On failure: attempt reconnect with exponential backoff.
+
+        On failure, reconnect the *same* tab in place with exponential backoff,
+        so callers' bridge objects and recorders stay valid. TERX never moves
+        to a different tab: if the active tab is gone, its bridge is closed and
+        removed, and ``bridge()`` raises until the host picks a tab.
         """
         backoff = 0.1
         while True:
             await asyncio.sleep(self.heartbeat_interval)
-            bridge = self._bridges.get(self._active_target)
+            target_id = self._active_target
+            bridge = self._bridges.get(target_id) if target_id else None
             if bridge is None:
                 continue
             try:
                 await bridge.send_internal("Browser.getVersion")
                 backoff = 0.1  # reset on success
+                continue
             except Exception:
                 logger.warning("CDP heartbeat failed — attempting reconnect in %.1fs", backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 10.0)
-                try:
-                    # Re-fetch targets and reconnect
-                    targets = await self._fetch_targets()
-                    page_targets = [t for t in targets if t.get("type") == "page"]
-                    if page_targets:
-                        await self._connect_target(page_targets[0]["id"])
-                        logger.info("CDP reconnected successfully")
-                        backoff = 0.1
-                except Exception as exc:
-                    logger.error("CDP reconnect failed: %s", exc)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 10.0)
+            try:
+                targets = await self._fetch_targets()
+            except Exception as exc:
+                logger.error("CDP reconnect failed: %s", exc)
+                continue
+            if not any(t.get("id") == target_id and t.get("type") == "page" for t in targets):
+                logger.error(
+                    "Active tab %s no longer exists; not switching to another tab", target_id
+                )
+                await bridge.close()
+                self._bridges.pop(target_id, None)
+                if self._active_target == target_id:
+                    self._active_target = None
+                continue
+            try:
+                await bridge.reconnect()
+                logger.info("CDP reconnected to tab %s", target_id)
+                backoff = 0.1
+            except Exception as exc:
+                logger.error("CDP reconnect failed: %s", exc)

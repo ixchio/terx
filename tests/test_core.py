@@ -2315,3 +2315,216 @@ def test_url_validation_blocks_browser_internal_pages():
     ):
         assert _validate_url(url) is not None, url
     assert _validate_url("about:blank") is None
+
+
+# ------------------------------------------------------------------ #
+# Reliability regression tests                                         #
+# ------------------------------------------------------------------ #
+
+
+class _FailingSocket:
+    async def send(self, message):
+        raise ConnectionError("socket went away")
+
+
+@pytest.mark.asyncio
+async def test_bridge_send_failure_does_not_leak_pending_future():
+    from terx.cdp.bridge import CDPBridge
+
+    bridge = CDPBridge("ws://unused")
+    bridge._ws = _FailingSocket()
+    bridge._connected = True
+    with pytest.raises(ConnectionError):
+        await bridge.send("Page.navigate", {"url": "https://example.com"})
+    with pytest.raises(ConnectionError):
+        await bridge.send_internal("Runtime.evaluate", {"expression": "1"})
+    assert bridge._pending == {}
+
+
+def test_bridge_event_queue_is_bounded_and_drops_oldest():
+    from terx.cdp.bridge import CDPBridge
+
+    bridge = CDPBridge("ws://unused", max_queued_events=3)
+    for index in range(5):
+        bridge._enqueue_event({"method": "Network.event", "index": index})
+    assert bridge._event_queue.qsize() == 3
+    assert bridge.dropped_events == 2
+    assert [bridge._event_queue.get_nowait()["index"] for _ in range(3)] == [2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_bridge_reconnect_keeps_recorders(monkeypatch):
+    from terx.cdp.bridge import CDPBridge
+
+    bridge = CDPBridge("ws://unused")
+    calls = []
+
+    async def fake_connect(self):
+        calls.append("connect")
+        self._connected = True
+
+    async def fake_close(self):
+        calls.append("close")
+        self._connected = False
+
+    monkeypatch.setattr(CDPBridge, "connect", fake_connect)
+    monkeypatch.setattr(CDPBridge, "close", fake_close)
+
+    def recorder(*_):
+        return None
+
+    bridge.add_recorder(recorder)
+    await bridge.reconnect()
+    assert calls == ["close", "connect"]
+    assert bridge._recorders == [recorder]
+
+
+class _HeartbeatBridge:
+    def __init__(self):
+        self.reconnects = 0
+        self.closed = False
+
+    async def send_internal(self, method, params=None):
+        raise ConnectionError("dropped")
+
+    async def reconnect(self):
+        self.reconnects += 1
+
+    async def close(self):
+        self.closed = True
+
+
+async def _run_heartbeat_once(session):
+    import asyncio
+
+    task = asyncio.create_task(session._heartbeat())
+    await asyncio.sleep(0.25)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_reconnects_the_same_tab_in_place(monkeypatch):
+    from terx.cdp.session import BrowserSession
+
+    session = BrowserSession(heartbeat_interval=0.01)
+    active, other = _HeartbeatBridge(), _HeartbeatBridge()
+    session._bridges = {"tab-a": active, "tab-b": other}
+    session._active_target = "tab-a"
+
+    async def targets():
+        # The other tab is listed first; the old code reconnected to it.
+        return [{"id": "tab-b", "type": "page"}, {"id": "tab-a", "type": "page"}]
+
+    monkeypatch.setattr(session, "_fetch_targets", targets)
+    await _run_heartbeat_once(session)
+    assert active.reconnects >= 1
+    assert other.reconnects == 0
+    assert session._active_target == "tab-a"
+    assert session._bridges["tab-a"] is active
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_never_switches_to_another_tab_when_active_is_gone(monkeypatch):
+    from terx.cdp.session import BrowserSession
+
+    session = BrowserSession(heartbeat_interval=0.01)
+    active, other = _HeartbeatBridge(), _HeartbeatBridge()
+    session._bridges = {"tab-a": active, "tab-b": other}
+    session._active_target = "tab-a"
+
+    async def targets():
+        return [{"id": "tab-b", "type": "page"}]
+
+    monkeypatch.setattr(session, "_fetch_targets", targets)
+    await _run_heartbeat_once(session)
+    assert active.closed is True
+    assert "tab-a" not in session._bridges
+    assert session._active_target is None
+    with pytest.raises(RuntimeError, match="No active browser tab"):
+        session.bridge()
+
+
+def test_audit_files_are_never_overwritten_and_stay_inside_audit_dir():
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        first = cache.write_audit("same-id", "task", [_semantic_click()], "x.com", False)
+        second = cache.write_audit("same-id", "task", [_semantic_click()], "x.com", True)
+        assert first != second
+        assert first.exists() and second.exists()
+        assert json.loads(first.read_text().splitlines()[0])["data"]["cache_hit"] is False
+        escaped = cache.write_audit("../../outside", "task", [], "x.com", False)
+        assert escaped.resolve().parent == (Path(tmp) / "audit").resolve()
+
+
+@pytest.mark.asyncio
+async def test_default_session_ids_are_unique():
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit")
+        ids = {session_for(cache, FakeBridge(), "task")._session_id for _ in range(50)}
+        assert len(ids) == 50
+
+
+@pytest.mark.asyncio
+async def test_replace_field_text_selects_existing_contents_before_typing():
+    from terx.cache.cache import replace_field_text
+
+    bridge = FakeBridge()
+    await replace_field_text(bridge, 101, "new@example.com")
+    methods = [method for method, _ in bridge.sent]
+    assert methods == ["DOM.focus", "DOM.resolveNode", "Runtime.callFunctionOn", "Input.insertText"]
+    select_call = bridge.sent[2][1]
+    assert "this.select()" in select_call["functionDeclaration"]
+    assert bridge.sent[3][1] == {"text": "new@example.com"}
+
+
+@pytest.mark.asyncio
+async def test_replace_field_text_records_only_focus_and_text():
+    from terx.cache.cache import replace_field_text
+
+    bridge = FakeBridge()
+    seen = []
+    bridge.add_recorder(lambda method, params, result, latency: seen.append(method))
+    await replace_field_text(bridge, 101, "value", record=True)
+    assert seen == ["DOM.focus", "Input.insertText"]
+
+    seen.clear()
+    await replace_field_text(bridge, 101, "", record=True)
+    # Clearing to empty is a key event, which the recorder treats as unsafe.
+    assert seen == ["DOM.focus", "Input.dispatchKeyEvent", "Input.dispatchKeyEvent"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_mcp_task_starts_cannot_both_enter(monkeypatch):
+    import asyncio
+
+    from terx.server.mcp import TERXServer
+
+    async def slow_snapshot(self, bridge):
+        await asyncio.sleep(0.05)
+        return bridge.snapshot
+
+    class Session:
+        def __init__(self, bridge):
+            self._bridge = bridge
+
+        def bridge(self):
+            return self._bridge
+
+    monkeypatch.setattr(DOMExtractor, "snapshot", slow_snapshot)
+    with tempfile.TemporaryDirectory() as tmp:
+        server = TERXServer(cache=MemoryCache(db_path=f"{tmp}/test.db", audit_dir=f"{tmp}/audit"))
+        server._session = Session(FakeBridge())
+        start = _mcp_tool(server, "browser_task_start")
+        args = {
+            "task": "login",
+            "scope_id": TEST_SCOPE,
+            "precondition": TEST_PRECONDITION,
+            "postcondition": TEST_POSTCONDITION,
+        }
+        first, second = await asyncio.gather(start(**args), start(**args))
+        outcomes = sorted([first.get("recording", False), second.get("recording", False)])
+        assert outcomes == [False, True]
+        refused = first if not first.get("recording") else second
+        assert refused["refused"] is True

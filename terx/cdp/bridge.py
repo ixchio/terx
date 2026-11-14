@@ -34,7 +34,15 @@ class CDPBridge:
             await bridge.send("Page.navigate", {"url": "https://example.com"})
     """
 
-    def __init__(self, ws_url: str, timeout: float = 30.0, connect_timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        ws_url: str,
+        timeout: float = 30.0,
+        connect_timeout: float = 10.0,
+        max_queued_events: int = 1000,
+    ) -> None:
+        if max_queued_events < 1:
+            raise ValueError("max_queued_events must be at least 1")
         self.ws_url = ws_url
         self.timeout = timeout
         self.connect_timeout = connect_timeout
@@ -42,7 +50,10 @@ class CDPBridge:
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._id_counter = itertools.count(1)  # Never overflows
         self._pending: dict[int, asyncio.Future] = {}
-        self._event_queue: asyncio.Queue = asyncio.Queue()
+        # Bounded: a host that enabled CDP domains but never drains events()
+        # must not grow memory without limit. The oldest events are dropped.
+        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=max_queued_events)
+        self.dropped_events = 0
         self._listener_task: asyncio.Task | None = None
         self._connected: bool = False
         self._recorders: list[Callable[[str, dict, dict, float], None]] = []
@@ -96,6 +107,16 @@ class CDPBridge:
             self._ws = None
         logger.debug("CDP closed")
 
+    async def reconnect(self) -> None:
+        """Re-open the same target's WebSocket in place.
+
+        Callers keep the same bridge object, and registered recorders stay
+        attached. Commands in flight when the old socket dropped fail with
+        ``ConnectionClosed``; they are never silently re-sent.
+        """
+        await self.close()
+        await self.connect()
+
     async def __aenter__(self) -> "CDPBridge":
         await self.connect()
         return self
@@ -118,32 +139,12 @@ class CDPBridge:
             CDPError: if Chrome returns an error object.
             asyncio.TimeoutError: if no response within self.timeout.
         """
-        if not self._connected or self._ws is None:
-            raise RuntimeError("CDPBridge is not connected. Call connect() first.")
-
-        cmd_id = next(self._id_counter)
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending[cmd_id] = future
-
-        message = json.dumps({"id": cmd_id, "method": method, "params": params or {}})
-        t0 = time.perf_counter()
-        await self._ws.send(message)
-        logger.debug("CDP → %s %s", method, params)
-
-        try:
-            result = await asyncio.wait_for(future, timeout=self.timeout)
-        except asyncio.TimeoutError:
-            self._pending.pop(cmd_id, None)
-            raise asyncio.TimeoutError(f"CDP command '{method}' timed out after {self.timeout}s")
-
-        latency_ms = (time.perf_counter() - t0) * 1000
-
-        for recorder in self._recorders:
+        result, latency_ms = await self._request(method, params, label="CDP command")
+        for recorder in list(self._recorders):
             try:
                 recorder(method, params or {}, result, latency_ms)
             except Exception as e:
                 logger.error("CDP recorder failed: %s", e)
-
         return result
 
     async def send_internal(self, method: str, params: dict | None = None) -> dict:
@@ -153,23 +154,29 @@ class CDPBridge:
         Used by TERX internals (readyState checks, screenshots, AX tree reads)
         so that internal bookkeeping commands are never recorded into the cache.
         """
+        result, _ = await self._request(method, params, label="Internal CDP command")
+        return result
+
+    async def _request(self, method: str, params: dict | None, *, label: str) -> tuple[dict, float]:
+        """Send one command and await its response; never leaks a pending future."""
         if not self._connected or self._ws is None:
             raise RuntimeError("CDPBridge is not connected. Call connect() first.")
 
         cmd_id = next(self._id_counter)
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[cmd_id] = future
-
         message = json.dumps({"id": cmd_id, "method": method, "params": params or {}})
-        await self._ws.send(message)
-
+        t0 = time.perf_counter()
         try:
-            return await asyncio.wait_for(future, timeout=self.timeout)
+            await self._ws.send(message)
+            logger.debug("CDP → %s %s", method, params)
+            result = await asyncio.wait_for(future, timeout=self.timeout)
         except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(f"{label} '{method}' timed out after {self.timeout}s")
+        finally:
+            # Covers a failed socket send, a timeout, and cancellation alike.
             self._pending.pop(cmd_id, None)
-            raise asyncio.TimeoutError(
-                f"Internal CDP command '{method}' timed out after {self.timeout}s"
-            )
+        return result, (time.perf_counter() - t0) * 1000
 
     # ------------------------------------------------------------------ #
     # Page load waiting                                                     #
@@ -214,6 +221,18 @@ class CDPBridge:
     # Internal listener loop                                                #
     # ------------------------------------------------------------------ #
 
+    def _enqueue_event(self, event: dict) -> None:
+        """Queue an event, dropping the oldest one when the queue is full."""
+        if self._event_queue.full():
+            try:
+                self._event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            self.dropped_events += 1
+            if self.dropped_events == 1 or self.dropped_events % 1000 == 0:
+                logger.debug("CDP event queue full; %d events dropped", self.dropped_events)
+        self._event_queue.put_nowait(event)
+
     async def _listen(self) -> None:
         """Background task: read from WebSocket, dispatch to futures/queue."""
         try:
@@ -237,7 +256,7 @@ class CDPBridge:
                             pass
                 else:
                     # Unsolicited event (DOM mutation, network event, etc.)
-                    await self._event_queue.put(msg)
+                    self._enqueue_event(msg)
                     logger.debug("CDP event ← %s", msg.get("method"))
 
         except ConnectionClosed:
