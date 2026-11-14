@@ -196,6 +196,7 @@ class TerxWorkflow:
         mutation_guard: bool = True,
         mutation_threshold: int = 20,
         approval_verifier: ApprovalVerifier | None = None,
+        replay_timeout: float = 10.0,
     ) -> None:
         self.cache = cache
         self.bridge = bridge
@@ -211,6 +212,7 @@ class TerxWorkflow:
         self.mutation_guard = mutation_guard
         self.mutation_threshold = mutation_threshold
         self.approval_verifier = approval_verifier
+        self.replay_timeout = replay_timeout
 
     async def run(
         self,
@@ -256,6 +258,7 @@ class TerxWorkflow:
             mutation_guard=self.mutation_guard,
             mutation_threshold=self.mutation_threshold,
             approval_verifier=self.approval_verifier,
+            replay_timeout=self.replay_timeout,
         ) as context:
             cache_hit = context.hit
             if cache_hit:
