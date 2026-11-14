@@ -65,6 +65,8 @@ class AXElement:
     backend_dom_id: int  # Chrome backend DOM node ID
     bounds: dict[str, Any] | None = None  # {x, y, width, height} if available
     depth: int = 0
+    frame: str = ""  # "" for the main frame, else the iframe path, e.g. "Checkout"
+    ordinal: int = 0  # position among elements with the same role in the same frame
 
     @property
     def label(self) -> str:
@@ -126,8 +128,14 @@ class DOMExtractor:
         nodes: list[dict[str, Any]] = ax_result.get("nodes", [])
 
         elements = self._extract_interactable(nodes)
+        # Page identity uses the main frame only: iframes such as ads or chat
+        # widgets change between loads and must not break workflow matching.
         role_seq = _build_role_sequence(elements)
         struct_hash = _structural_hash(role_seq)
+
+        elements.extend(await self._frame_elements(bridge, nodes))
+        _dedupe_ids(elements)
+        _assign_ordinals(elements)
 
         return DOMSnapshot(
             url=url,
@@ -137,10 +145,64 @@ class DOMExtractor:
             role_sequence=role_seq,
         )
 
+    async def _frame_elements(
+        self, bridge: CDPBridge, main_nodes: list[dict[str, Any]]
+    ) -> list[AXElement]:
+        """Collect interactable elements from same-process child frames.
+
+        Each element is tagged with its frame path, built from the accessible
+        names of the ``<iframe>`` elements that contain it. A frame running in
+        another renderer process (a cross-site iframe) cannot be read through
+        this connection; its elements are absent, so targets in it refuse.
+        """
+        try:
+            tree = await bridge.send_internal("Page.getFrameTree")
+        except Exception:
+            return []
+        found: list[AXElement] = []
+
+        async def walk(
+            frame_tree: dict[str, Any], parent_nodes: list[dict[str, Any]], prefix: str
+        ) -> None:
+            owner_names = {
+                node.get("backendDOMNodeId"): self._get_value(node.get("name")).strip()
+                for node in parent_nodes
+                if self._get_value(node.get("role")).lower() == "iframe"
+            }
+            for index, child in enumerate(frame_tree.get("childFrames") or []):
+                frame = child.get("frame") or {}
+                frame_id = frame.get("id")
+                if not isinstance(frame_id, str):
+                    continue
+                label = ""
+                try:
+                    owner = await bridge.send_internal("DOM.getFrameOwner", {"frameId": frame_id})
+                    label = owner_names.get(owner.get("backendNodeId"), "")
+                except Exception:
+                    pass
+                label = label or str(frame.get("name") or "") or f"frame {index + 1}"
+                path = f"{prefix} > {label}" if prefix else label
+                try:
+                    ax = await bridge.send_internal(
+                        "Accessibility.getFullAXTree", {"frameId": frame_id}
+                    )
+                except Exception:
+                    continue  # Out-of-process frame.
+                frame_nodes: list[dict[str, Any]] = ax.get("nodes", [])
+                found.extend(self._extract_interactable(frame_nodes, frame=path))
+                await walk(child, frame_nodes, path)
+
+        frame_tree = tree.get("frameTree")
+        if isinstance(frame_tree, dict):
+            await walk(frame_tree, main_nodes, "")
+        return found
+
     # Roles whose current runtime value can change without DOM structure change
     _VALUE_VOLATILE_ROLES = {"spinbutton", "slider", "scrollbar", "combobox", "listbox"}
 
-    def _extract_interactable(self, nodes: list[dict[str, Any]]) -> list[AXElement]:
+    def _extract_interactable(
+        self, nodes: list[dict[str, Any]], frame: str = ""
+    ) -> list[AXElement]:
         """Filter to interactable nodes and assign stable deterministic IDs."""
         elements: list[AXElement] = []
 
@@ -178,26 +240,11 @@ class DOMExtractor:
                 node_id=node.get("nodeId", ""),
                 backend_dom_id=node.get("backendDOMNodeId", 0),
                 depth=len(str(parent_id).split(".")) if parent_id else 0,
+                frame=frame,
             )
             elements.append(el)
 
-        # Deduplicate stable IDs (hash collision fallback with secondary hash)
-        seen_ids: set[int] = set()
-        for idx, el in enumerate(elements):
-            collision_count = 0
-            while el.id in seen_ids:
-                # Use secondary hash with collision counter to avoid clustering
-                id_input = (
-                    f"{el.role}:{el.semantic_name}:{el.backend_dom_id}:{collision_count}".encode()
-                )
-                el.id = int(hashlib.md5(id_input).hexdigest()[:8], 16) % 100_000
-                collision_count += 1
-                if collision_count > 10:  # Prevent infinite loops on pathological cases
-                    # Fallback to sequential ID if too many collisions
-                    el.id = (max(seen_ids) + 1 if seen_ids else idx) % 100_000
-                    break
-            seen_ids.add(el.id)
-
+        _dedupe_ids(elements)
         return elements
 
     def _get_value(self, prop: Any) -> str:
@@ -207,6 +254,34 @@ class DOMExtractor:
         if isinstance(prop, dict):
             return str(prop.get("value", ""))
         return str(prop)
+
+
+def _dedupe_ids(elements: list[AXElement]) -> None:
+    """Make public element IDs unique (hash collision fallback)."""
+    seen_ids: set[int] = set()
+    for idx, el in enumerate(elements):
+        collision_count = 0
+        while el.id in seen_ids:
+            # Use secondary hash with collision counter to avoid clustering
+            id_input = (
+                f"{el.role}:{el.semantic_name}:{el.backend_dom_id}:{collision_count}".encode()
+            )
+            el.id = int(hashlib.md5(id_input).hexdigest()[:8], 16) % 100_000
+            collision_count += 1
+            if collision_count > 10:  # Prevent infinite loops on pathological cases
+                # Fallback to sequential ID if too many collisions
+                el.id = (max(seen_ids) + 1 if seen_ids else idx) % 100_000
+                break
+        seen_ids.add(el.id)
+
+
+def _assign_ordinals(elements: list[AXElement]) -> None:
+    """Number elements by document order within each (frame, role) group."""
+    counts: dict[tuple[str, str], int] = {}
+    for el in elements:
+        key = (el.frame, el.role)
+        el.ordinal = counts.get(key, 0)
+        counts[key] = el.ordinal + 1
 
 
 # ------------------------------------------------------------------ #

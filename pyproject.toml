@@ -49,6 +49,7 @@ terx           = "terx.cli:main"
 terx-server    = "terx.server.mcp:main"
 terx-demo      = "terx.demo:main"
 terx-eval-local = "terx.evals.local_suite:main"
+terx-eval-hard = "terx.evals.hard_suite:main"
 
 [project.urls]
 Homepage      = "https://github.com/ixchio/terx"

@@ -57,6 +57,15 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_local = sub.add_parser("eval-local", help="Run the local browser replay eval suite")
     eval_local.set_defaults(func=_cmd_eval_local)
 
+    eval_hard = sub.add_parser(
+        "eval-hard", help="Run the hard replay eval and print replay and refusal metrics"
+    )
+    eval_hard.add_argument("--only", nargs="*", help="Run only these scenario names")
+    eval_hard.add_argument(
+        "--gate", action="store_true", help="Exit non-zero on any unsafe outcome or false refusal"
+    )
+    eval_hard.set_defaults(func=_cmd_eval_hard)
+
     mcp_config = sub.add_parser(
         "mcp-config", help="Print a copy-paste MCP configuration; never writes client files"
     )
@@ -123,6 +132,17 @@ def _cmd_eval_local(_: argparse.Namespace) -> int:
 
     eval_main()
     return 0
+
+
+def _cmd_eval_hard(args: argparse.Namespace) -> int:
+    from terx.evals.hard_suite import main as hard_main
+
+    argv: list[str] = []
+    if args.only:
+        argv += ["--only", *args.only]
+    if args.gate:
+        argv.append("--gate")
+    return hard_main(argv)
 
 
 def _cmd_mcp_config(args: argparse.Namespace) -> int:

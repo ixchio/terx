@@ -25,13 +25,22 @@ try:
 except ImportError:
     raise ImportError("mcp is required for the TERX server. Install with: pip install mcp")
 
-from terx.cache.actions import click_element, replace_field_text
+from terx.cache.actions import (
+    click_element,
+    describe_target,
+    press_key_element,
+    replace_field_text,
+    select_option_element,
+    set_checked_element,
+)
+from terx.cache.models import CDPCommand
 from terx.cache.errors import ReplayRefused
-from terx.cache.policy import ApprovalVerifier, ReplayPolicy, SideEffect
+from terx.cache.policy import PRESS_KEYS, ApprovalVerifier, ReplayPolicy, SideEffect
 from terx.cache.recording import RecordingContext, session_for
 from terx.cache.storage import MemoryCache
 from terx.cdp.session import BrowserSession
-from terx.dom.extractor import DOMExtractor
+from terx.cdp.bridge import CDPBridge
+from terx.dom.extractor import AXElement, DOMExtractor, DOMSnapshot
 from terx.tools import (
     SavedTool,
     ToolManifestError,
@@ -220,6 +229,46 @@ class TERXServer:
                 self._task_operation_running = False
 
         return wrapper
+
+    def _observe(self, snapshot: DOMSnapshot) -> None:
+        """Let an active recording map this page's elements to targets."""
+        if self._task_ctx is not None and self._task_ctx.is_recording:
+            self._task_ctx.observe_snapshot(snapshot)
+
+    async def _element_action(
+        self,
+        element_id: int,
+        method: str,
+        params: dict[str, Any],
+        run: Callable[[CDPBridge, AXElement], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """Run one semantic element action and record it if a task is active."""
+        await self._ensure_connected()
+        bridge = self._get_session().bridge()
+        snapshot = await self._extractor.snapshot(bridge)
+        self._observe(snapshot)
+        element = snapshot.find_by_id(element_id)
+        if element is None:
+            return {
+                "success": False,
+                "error": f"Element {element_id} not found. Call browser_get_state to refresh.",
+            }
+        try:
+            await run(bridge, element)
+        except ReplayRefused as exc:
+            return {"success": False, "error": exc.reason}
+        ctx = self._task_ctx
+        if ctx is not None and ctx.is_recording:
+            if element.semantic_name:
+                target = await describe_target(bridge, element)
+                ctx.record_command(CDPCommand(method, {"target": target, **params}, {}, 0.0))
+            else:
+                ctx.mark_unreplayable(f"{method} target has no accessible name")
+        await asyncio.sleep(0.2)
+        return {
+            "success": True,
+            "element": {"id": element.id, "role": element.role, "label": element.label},
+        }
 
     def _scope_matches(self, manifest: SavedTool, scope_id: str) -> bool:
         """Check a caller's raw scope against a manifest's keyed digest."""
@@ -677,6 +726,7 @@ class TERXServer:
             session = self._get_session()
             bridge = session.bridge()
             snapshot = await self._extractor.snapshot(bridge)
+            self._observe(snapshot)
 
             el = snapshot.find_by_id(element_id)
             if el is None:
@@ -711,6 +761,7 @@ class TERXServer:
             session = self._get_session()
             bridge = session.bridge()
             snapshot = await self._extractor.snapshot(bridge)
+            self._observe(snapshot)
 
             el = snapshot.find_by_id(element_id)
             if el is None:
@@ -763,6 +814,7 @@ class TERXServer:
             session = self._get_session()
             bridge = session.bridge()
             snapshot = await self._extractor.snapshot(bridge)
+            self._observe(snapshot)
 
             el = snapshot.find_by_id(element_id)
             if el is None:
@@ -775,6 +827,54 @@ class TERXServer:
                 "typed_into": {"id": el.id, "role": el.role, "label": el.label},
                 "text_length": len(text),
             }
+
+        @self.mcp.tool()
+        async def browser_set_checked(element_id: int, checked: bool = True) -> dict[str, Any]:
+            """
+            Set a checkbox, switch, or radio to checked (or unchecked) by element ID.
+            Unlike clicking, this never toggles a box that is already in that state.
+            """
+
+            async def run(bridge: CDPBridge, element: AXElement) -> None:
+                await set_checked_element(bridge, element.backend_dom_id, checked)
+
+            return await self._element_action(element_id, "TERX.check", {"checked": checked}, run)
+
+        @self.mcp.tool()
+        async def browser_select_option(element_id: int, option: str) -> dict[str, Any]:
+            """
+            Choose the dropdown option whose visible label is `option`, by element ID.
+            During a recorded task, an option equal to a declared variable's value
+            is recorded as that variable so replay can choose a different one.
+            """
+
+            async def run(bridge: CDPBridge, element: AXElement) -> None:
+                await select_option_element(bridge, element.backend_dom_id, option)
+
+            recorded = option
+            ctx = self._task_ctx
+            if ctx is not None and ctx.is_recording:
+                names = [name for name, value in ctx.variables.items() if str(value) == option]
+                if len(names) == 1:
+                    recorded = f"{{{{{names[0]}}}}}"
+            return await self._element_action(element_id, "TERX.select", {"option": recorded}, run)
+
+        @self.mcp.tool()
+        async def browser_press_key(element_id: int, key: str) -> dict[str, Any]:
+            """
+            Focus an element and press Enter, Tab, or Escape on it, by element ID.
+            Use Enter to submit a search box or form that has no button.
+            """
+            if key not in PRESS_KEYS:
+                return {
+                    "success": False,
+                    "error": f"key must be one of {', '.join(sorted(PRESS_KEYS))}",
+                }
+
+            async def run(bridge: CDPBridge, element: AXElement) -> None:
+                await press_key_element(bridge, element.backend_dom_id, key)
+
+            return await self._element_action(element_id, "TERX.press", {"key": key}, run)
 
         @self.mcp.tool()
         async def browser_screenshot() -> dict[str, Any]:

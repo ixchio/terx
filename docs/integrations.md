@@ -3,7 +3,7 @@
 TERX is a replay gate, not another browser runtime. Integrations use the
 existing Chrome DevTools Protocol connection and must not add a second browser,
 resident agent process, cloud service, or framework dependency merely to cache
-three semantic actions.
+a handful of semantic actions.
 
 ## MCP clients
 

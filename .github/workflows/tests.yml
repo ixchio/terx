@@ -48,3 +48,7 @@ jobs:
     - name: Run real Chrome replay eval
       run: |
         python -m terx.evals.local_suite
+
+    - name: Run hard replay eval (fails on any unsafe outcome or false refusal)
+      run: |
+        python -m terx.evals.hard_suite --gate

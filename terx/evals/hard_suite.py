@@ -292,6 +292,43 @@ async def _url_template(browser: TerxActions, variables: dict[str, str], base: s
     await browser.wait_for({"text_contains": "Order "})
 
 
+def _conflicting_signals_page(variant: Variant) -> str:
+    # Warm variant: the "Archive" label now sits on the element whose test id
+    # used to be "delete". Name and test id point at different buttons.
+    archive_id, delete_id = ("archive", "delete") if variant == "cold" else ("delete", "archive")
+    return _doc(
+        f"<button data-testid={archive_id} class=x>Archive</button>"
+        f"<button data-testid={delete_id} class=x>Delete</button>",
+        "document.querySelectorAll('.x').forEach((b) => { b.onclick = () => {"
+        "  document.getElementById('out').textContent = 'Done: ' + b.textContent; }; });",
+    )
+
+
+async def _conflicting_signals(browser: TerxActions, _: dict[str, str], __: str) -> None:
+    await browser.click("button", "Archive")
+    await browser.wait_for({"text_contains": "Done:"})
+
+
+def _drift_and_move_page(variant: Variant) -> str:
+    # Warm variant: the label changed AND a new button now precedes it, so the
+    # test id alone is not corroborated by the element's position.
+    # A realistic toolbar keeps the page similar enough to be the same cached
+    # page, so the refusal must come from target resolution, not a cache miss.
+    toolbar = "".join(
+        f"<button type=button>{n}</button>" for n in ("Bold", "Italic", "Link", "Undo")
+    )
+    body = (
+        f"<button data-testid=signup id=b>Sign up</button>{toolbar}"
+        if variant == "cold"
+        else f"<button>Learn more</button><button data-testid=signup id=b>Register</button>{toolbar}"
+    )
+    return _doc(
+        body,
+        "document.getElementById('b').onclick = () => {"
+        "  document.getElementById('out').textContent = 'Account created'; };",
+    )
+
+
 SCENARIOS: list[Scenario] = [
     Scenario(
         "submit_navigates",
@@ -408,6 +445,36 @@ SCENARIOS: list[Scenario] = [
         {"query": "invoices"},
         {"text_contains": "Results for"},
         lambda text, v: f"Results for {v['query']}" in text,
+    ),
+    Scenario(
+        "conflicting_signals",
+        "Label and test id now point at different buttons: must refuse",
+        "refuse",
+        _conflicting_signals_page,
+        _conflicting_signals,
+        {},
+        {},
+        {"text_contains": "Done:"},
+    ),
+    Scenario(
+        "label_drift_and_move",
+        "Label changed and the element moved: must refuse",
+        "refuse",
+        _drift_and_move_page,
+        _translated_label,
+        {},
+        {},
+        {"text_contains": "Account created"},
+    ),
+    Scenario(
+        "select_missing_option",
+        "The requested option does not exist: must refuse",
+        "refuse",
+        _select_page,
+        _select,
+        {"country": "Canada"},
+        {"country": "Atlantis"},
+        {"text_contains": "Country:"},
     ),
     Scenario(
         "url_template",

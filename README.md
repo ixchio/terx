@@ -38,17 +38,30 @@ Conditions support `url_contains`, `title_contains`, `text_contains`, and
 are not written to the cache. Change any part of a workflow contract and bump
 `workflow_version` to intentionally create a new replay entry.
 
-TERX persists only three semantic actions:
+TERX persists only six semantic actions:
 
 - `TERX.navigate` — an `http` or `https` origin-and-path navigation (no query,
-  fragment, or embedded credential);
-- `TERX.click` — an exact accessible role and label;
-- `TERX.type` — an exact labelled input and a named value placeholder.
+  fragment, or embedded credential). The path may hold `{{variable}}`
+  placeholders, and a path segment equal to a variable's value is recorded as
+  one, so `/orders/A-100` replays as `/orders/<new order_id>`;
+- `TERX.click` — one element identified by accessible role and label;
+- `TERX.type` — replace a labelled input's value with a named variable;
+- `TERX.check` — set a checkbox, switch, or radio to on or off (never toggle);
+- `TERX.select` — choose a dropdown option by its visible label or a variable;
+- `TERX.press` — press `Enter`, `Tab`, or `Escape` on a labelled element.
 
-Raw CDP commands, coordinate clicks, key events, and arbitrary JavaScript still
-run on the cold path but make the workflow non-cacheable. Ambiguous targets,
-failed conditions, missing variables, expiry, and unapproved destructive work
-produce a structured refusal; TERX does not silently invoke an LLM.
+Each target records its role and label, plus its position among same-role
+elements, its iframe, and a `data-testid`-style attribute when present. A
+target must not be ambiguous, and its signals must agree: if the label now
+belongs to an element with a different test id, TERX refuses. A changed label
+is tolerated only when the test id *and* the position still identify one
+element, and the replay report lists every such drift in `locator_notes`.
+
+Raw CDP commands, coordinate clicks, other key events, and arbitrary
+JavaScript still run on the cold path but make the workflow non-cacheable.
+Ambiguous targets, failed conditions, missing variables, expiry, and unapproved
+destructive work produce a structured refusal; TERX does not silently invoke an
+LLM.
 
 ## Why it stays lightweight
 
@@ -179,8 +192,10 @@ terx mcp-config --client codex
 
 For code that already has a Chrome CDP bridge, use TERX's dependency-free
 workflow adapter. It adds no Playwright/Selenium runtime, browser process, or
-background worker. The cold path exposes only the three actions TERX can prove
-and replay:
+background worker. The cold path exposes only the actions TERX can prove and
+replay: `navigate`, `click`, `type_into`, `set_checked`, `select_option`,
+`press`, and the non-recorded `wait_for`. Each element action takes an optional
+`frame=` for an element inside a same-origin iframe:
 
 ```python
 from terx.integrations.workflow import TerxWorkflow
@@ -288,12 +303,20 @@ Browser Use session is not a drop-in capture source.
 ```bash
 pytest tests/ -v
 ruff check .
+mypy
 terx eval-local
+terx eval-hard --gate
 ```
 
 `terx eval-local` launches a temporary local page and headless Chrome to verify
-cold recording and warm semantic replay. It does not establish compatibility
-with arbitrary production websites.
+cold recording and warm semantic replay. `terx eval-hard` replays 15 harder
+scenarios (page loads after submit, late rendering, controlled inputs, shadow
+DOM, iframes, translated labels, checkboxes, dropdowns, Enter to submit, URL
+variables, and five pages that must be refused) and checks the real page
+outcome. It reports the **replay rate**, the **false refusal rate**, and
+**unsafe outcomes**; `--gate`, which CI runs, fails on any unsafe outcome or
+false refusal. See [benchmarks](docs/benchmarks.md) for current numbers.
+Neither suite establishes compatibility with arbitrary production websites.
 
 ## What TERX is not
 

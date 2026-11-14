@@ -20,6 +20,7 @@ from terx.cache.errors import (
     ReplayRefused,
 )
 from terx.cache.policy import (
+    validate_action,
     SideEffect,
     ApprovalDecision,
     ApprovalVerifier,
@@ -35,6 +36,7 @@ from terx.cache.redaction import (
     _normalize_variables,
     _placeholders_in_commands,
     _prepare_recorded_params,
+    _templatize_url,
     _redacted_fields_in_commands,
     _replay_command_digest,
 )
@@ -112,6 +114,7 @@ class RecordingContext:
         self._stored = False
         self._scope_digest = ""
         self._snapshot: DOMSnapshot | None = None
+        self._target_snapshot: DOMSnapshot | None = None
         self._domain: str = "unknown"
         self._origin: str = ""
         self._route: str = "/"
@@ -186,11 +189,14 @@ class RecordingContext:
                 mutation_guard_started = await _start_mutation_guard(self._bridge)
                 mutation_count = 0 if mutation_guard_started else None
 
+            locator_notes: list[str] = []
             for cmd in self._cached_seq.commands:
                 try:
-                    await _execute_replay_action(
+                    note = await _execute_replay_action(
                         self._bridge, cmd, replay_variables, timeout=self._replay_timeout
                     )
+                    if note:
+                        locator_notes.append(note)
                 except MissingReplayVariable as exc:
                     self._refuse(f"missing replay variable: {exc.variable_name}")
                 except ReplayRefused as exc:
@@ -264,6 +270,7 @@ class RecordingContext:
             scope_verified=True,
             preconditions_verified=True,
             postconditions_verified=True,
+            locator_notes=locator_notes,
         )
         self._cache.write_audit(
             session_id=self._session_id,
@@ -346,7 +353,36 @@ class RecordingContext:
         if cmd.method not in REPLAY_ACTIONS:
             self._unsafe_reasons.append(f"unsupported manual action: {cmd.method}")
             return
+        try:
+            validate_action(cmd.method, cmd.params)
+        except ValueError as exc:
+            self._unsafe_reasons.append(f"invalid manual action: {exc}")
+            return
         self._recorded_commands.append(cmd)
+
+    def mark_unreplayable(self, reason: str) -> None:
+        """Record that this cold run did something TERX cannot replay."""
+        self._unsafe_reasons.append(reason)
+
+    @property
+    def is_recording(self) -> bool:
+        """True while this context is observing a cold run."""
+        return not self.hit
+
+    def observe_snapshot(self, snapshot: DOMSnapshot) -> None:
+        """Give the CDP recorder the page an agent is about to act on.
+
+        The recorder maps raw ``backendNodeId`` values to labelled targets
+        using a snapshot. Without a fresh one, every action after the first
+        navigation would be unidentifiable and make the run non-cacheable.
+        The starting snapshot, which identifies the cached page, is unchanged.
+        """
+        self._target_snapshot = snapshot
+
+    @property
+    def variables(self) -> dict[str, Any]:
+        """The normalized variables of this run (values are never persisted)."""
+        return dict(self._variables)
 
     def _auto_record(
         self, method: str, params: dict[str, Any], result: dict[str, Any], latency: float
@@ -355,15 +391,21 @@ class RecordingContext:
         if method == "Page.navigate":
             url = params.get("url")
             if isinstance(url, str) and _is_replayable_url(url):
+                template, problems = _templatize_url(url, self._variables)
+                if problems:
+                    self._unsafe_reasons.extend(problems)
+                    return
                 self._recorded_commands.append(
-                    CDPCommand("TERX.navigate", {"url": url}, {}, latency)
+                    CDPCommand("TERX.navigate", {"url": template}, {}, latency)
                 )
             else:
                 self._unsafe_reasons.append("navigation URL is not replayable")
             return
 
         if method in {"DOM.focus", "DOM.resolveNode"}:
-            target = _target_for_backend_node(params.get("backendNodeId"), self._snapshot)
+            target = _target_for_backend_node(
+                params.get("backendNodeId"), self._target_snapshot or self._snapshot
+            )
             if target is None:
                 self._unsafe_reasons.append(f"{method} target is not uniquely identifiable")
                 return

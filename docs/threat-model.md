@@ -64,15 +64,19 @@ does not limit what a live agent can do with the browser on the cold path.
 
 ### T2. The page changed and replay acts on the wrong element
 
-- **Mitigations:** targets must match an exact accessible role and name, and
-  more than one match is refused. A missing target is waited for and then
+- **Mitigations:** targets must match an exact accessible role and name (in
+  the recorded iframe), and more than one match is refused. When a test id was
+  recorded, a name match whose element now has a different test id is refused
+  as a signal conflict. A changed name is tolerated only when the test id and
+  the element's position among same-role elements both still agree, and the
+  report lists it in `locator_notes`. A missing target is waited for and then
   refused. The DOM mutation guard is checked after every step and stops the
   sequence. A postcondition must hold at the end, or the replay reports
-  `failed`.
-- **Residual risk:** an element with the same role and name but a different
-  meaning (for example a "Delete" button now attached to a different record)
-  is indistinguishable. Each step's own side effects happen before the guard
-  reads them.
+  `failed`. `terx eval-hard` checks five must-refuse pages in CI.
+- **Residual risk:** an element with the same role, name, and test id but a
+  different meaning (for example a "Delete" button now attached to a different
+  record) is indistinguishable. Each step's own side effects happen before the
+  guard reads them.
 
 ### T3. A destructive action runs without consent
 
@@ -91,9 +95,11 @@ does not limit what a live agent can do with the browser on the cold path.
   named variable is not cacheable. Password, token, key, and similar fields are
   redacted at every persistence boundary. CDP responses are never stored, and
   TERX captures no screenshots. Scope IDs are stored only as keyed digests.
-- **Residual risk:** navigation URLs keep their path, so a secret in a path
-  (`/reset/<token>`) is stored in plain text. Task descriptions, labels, and
-  condition summaries written by the caller are stored as given.
+- **Residual risk:** a path segment equal to a declared variable is stored as a
+  `{{placeholder}}`, but a secret in a URL path that was *not* supplied as a
+  variable (`/reset/<token>`) is stored in plain text. Pass such tokens as
+  variables. Task descriptions, labels, and condition summaries written by the
+  caller are stored as given.
 
 ### T5. A prompt-injected agent misuses the browser
 
@@ -152,7 +158,9 @@ does not limit what a live agent can do with the browser on the cold path.
 
 ## Known gaps and planned work
 
-- Secrets in navigation URL paths (T4): URL templates with named variables.
+- Secrets in URL paths that are not variables (T4): detection of token-like
+  segments.
 - Unsigned workflows (T7): signed, reviewable workflow files.
-- Single-signal targets (T2): multiple locator signals that must agree.
 - Unauthenticated MCP clients (T6): per-client credentials and capabilities.
+- Cross-site iframes: elements in an out-of-process frame are not visible to
+  TERX, so targets there refuse.

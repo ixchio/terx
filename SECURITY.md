@@ -33,11 +33,13 @@ atomically validate and consume an opaque approval token. TERX rejects any
 decision that is not both approved and consumed; a non-empty token alone has no
 authority.
 
-Only `TERX.navigate`, `TERX.click`, and `TERX.type` are persisted. Arbitrary
-CDP commands, raw keyboard and mouse events, coordinate clicks, and arbitrary
-JavaScript are not replayable. Ambiguous or missing semantic targets are
-refused, not guessed. Replayable navigation excludes query strings, fragments,
-and embedded credentials so those values do not become cached workflow data.
+Only `TERX.navigate`, `TERX.click`, `TERX.type`, `TERX.check`, `TERX.select`,
+and `TERX.press` (Enter, Tab, or Escape only) are persisted. Arbitrary CDP
+commands, other keyboard and mouse events, coordinate clicks, and arbitrary
+JavaScript are not replayable. Ambiguous or missing semantic targets, and
+targets whose recorded signals disagree, are refused, not guessed. Replayable
+navigation excludes query strings, fragments, and embedded credentials, and a
+`{{placeholder}}` may appear only in a URL's path, never its host.
 
 Replay policy conditions allow only non-empty URL, title, visible-text, and
 selector checks. Arbitrary JavaScript conditions cannot enter the replay cache. The
