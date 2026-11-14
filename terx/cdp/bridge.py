@@ -47,22 +47,27 @@ class CDPBridge:
         self.timeout = timeout
         self.connect_timeout = connect_timeout
 
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        # The connection class moved between websockets releases; keep it untyped.
+        self._ws: Any | None = None
         self._id_counter = itertools.count(1)  # Never overflows
-        self._pending: dict[int, asyncio.Future] = {}
+        self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         # Bounded: a host that enabled CDP domains but never drains events()
         # must not grow memory without limit. The oldest events are dropped.
-        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=max_queued_events)
+        self._event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=max_queued_events)
         self.dropped_events = 0
-        self._listener_task: asyncio.Task | None = None
+        self._listener_task: asyncio.Task[None] | None = None
         self._connected: bool = False
-        self._recorders: list[Callable[[str, dict, dict, float], None]] = []
+        self._recorders: list[Callable[[str, dict[str, Any], dict[str, Any], float], None]] = []
 
-    def add_recorder(self, recorder: Callable[[str, dict, dict, float], None]) -> None:
+    def add_recorder(
+        self, recorder: Callable[[str, dict[str, Any], dict[str, Any], float], None]
+    ) -> None:
         if recorder not in self._recorders:
             self._recorders.append(recorder)
 
-    def remove_recorder(self, recorder: Callable[[str, dict, dict, float], None]) -> None:
+    def remove_recorder(
+        self, recorder: Callable[[str, dict[str, Any], dict[str, Any], float], None]
+    ) -> None:
         if recorder in self._recorders:
             self._recorders.remove(recorder)
 
@@ -128,7 +133,7 @@ class CDPBridge:
     # Send a CDP command, get a response                                    #
     # ------------------------------------------------------------------ #
 
-    async def send(self, method: str, params: dict | None = None) -> dict:
+    async def send(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Send a CDP command and await its response.
 
@@ -147,7 +152,9 @@ class CDPBridge:
                 logger.error("CDP recorder failed: %s", e)
         return result
 
-    async def send_internal(self, method: str, params: dict | None = None) -> dict:
+    async def send_internal(
+        self, method: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Send a CDP command WITHOUT triggering recorders.
 
@@ -157,13 +164,15 @@ class CDPBridge:
         result, _ = await self._request(method, params, label="Internal CDP command")
         return result
 
-    async def _request(self, method: str, params: dict | None, *, label: str) -> tuple[dict, float]:
+    async def _request(
+        self, method: str, params: dict[str, Any] | None, *, label: str
+    ) -> tuple[dict[str, Any], float]:
         """Send one command and await its response; never leaks a pending future."""
         if not self._connected or self._ws is None:
             raise RuntimeError("CDPBridge is not connected. Call connect() first.")
 
         cmd_id = next(self._id_counter)
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[cmd_id] = future
         message = json.dumps({"id": cmd_id, "method": method, "params": params or {}})
         t0 = time.perf_counter()
@@ -208,7 +217,7 @@ class CDPBridge:
     # Event stream                                                          #
     # ------------------------------------------------------------------ #
 
-    async def events(self) -> AsyncIterator[dict]:
+    async def events(self) -> AsyncIterator[dict[str, Any]]:
         """Async-iterate over unsolicited CDP events."""
         while self._connected:
             try:
@@ -221,7 +230,7 @@ class CDPBridge:
     # Internal listener loop                                                #
     # ------------------------------------------------------------------ #
 
-    def _enqueue_event(self, event: dict) -> None:
+    def _enqueue_event(self, event: dict[str, Any]) -> None:
         """Queue an event, dropping the oldest one when the queue is full."""
         if self._event_queue.full():
             try:
@@ -235,9 +244,12 @@ class CDPBridge:
 
     async def _listen(self) -> None:
         """Background task: read from WebSocket, dispatch to futures/queue."""
+        ws = self._ws
+        if ws is None:
+            return
         try:
-            async for raw in self._ws:
-                msg: dict = json.loads(raw)
+            async for raw in ws:
+                msg: dict[str, Any] = json.loads(raw)
 
                 if "id" in msg:
                     # Response to a command we sent

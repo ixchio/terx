@@ -4,7 +4,7 @@ TERX — Memory layer for browser agents.
 
 from terx.cdp.bridge import CDPBridge
 from terx.cdp.session import BrowserSession
-from terx.cache.cache import (
+from terx.cache import (
     ApprovalDecision,
     ApprovalVerifier,
     MemoryCache,
@@ -16,8 +16,6 @@ from terx.cache.cache import (
 )
 from terx.tools import SavedTool, ToolManifestError, ToolResultError
 
-# Backwards compatibility alias
-MuscleMemorycache = MemoryCache
 
 __version__ = "0.5.3"
 __all__ = [
@@ -26,7 +24,6 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalVerifier",
     "MemoryCache",
-    "MuscleMemorycache",
     "ReplayDecision",
     "ReplayApprovalRequest",
     "ReplayPolicy",

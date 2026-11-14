@@ -6,6 +6,29 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ## [Unreleased]
 
+### Changed
+
+- `terx/cache/cache.py` (about 2,000 lines) is split into focused modules:
+  `storage`, `policy`, `recording`, `actions`, `conditions`, `redaction`,
+  `guard`, `models`, and `errors`. `terx.cache.cache` still re-exports every
+  name it defined, and stays importable throughout 1.x; new code should import
+  from `terx` or `terx.cache`.
+- Click and type logic shared by replay, the workflow adapter, and MCP now
+  lives in `terx.cache.actions.click_element` and `replace_field_text`.
+
+### Removed
+
+- The experimental `SelfHealer` (`terx.agent`) and the `healing` extra. TERX no
+  longer contains any model client.
+- SSIM visual audit (`terx.vision`), `MemoryCache(visual_audit=...)`, and the
+  `vision` extra. The SSIM score was only logged and never affected replay.
+- The `embeddings` extra, which had no code behind it.
+- The retired v0.3 benchmark runners (`terx.benchmarks`); their source remains
+  at the `v0.5.3` tag.
+- The `MuscleMemorycache` alias; use `MemoryCache`.
+- Unused dev dependencies (`pytest-benchmark`, `rich`, `python-dotenv`) and the
+  benchmark and LLM entries in `.env.example`.
+
 ### Security
 
 - Scope digests are now HMAC-SHA256 with a random local key

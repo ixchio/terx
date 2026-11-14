@@ -1,3 +1,0 @@
-"""
-TERX Benchmarks module.
-"""

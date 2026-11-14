@@ -16,7 +16,10 @@ Do not open a public issue. Use
 or the maintainer address in PyPI metadata. Include impact, a minimal
 reproduction, and suggested remediation if available.
 
-## v0.4 trust boundary
+## Trust boundary
+
+The full threat model, including residual risks, is in
+[docs/threat-model.md](docs/threat-model.md).
 
 TERX connects to a Chrome instance exposed through a local CDP WebSocket. CDP
 has the authority of that browser profile. Use a dedicated profile for browser
@@ -64,9 +67,7 @@ persisted in the cache's policy summary.
 - MCP clients can only replace or delete a saved tool, or invalidate cached
   workflows, for a scope they present. A tool can only be saved when a live
   recorded workflow matches its task, scope, version, and policy.
-- End-of-workflow screenshots are not stored by default. `MemoryCache(
-  visual_audit=True)` opts in; baselines then go under the cache directory as
-  owner-only files named by a digest of the full scoped replay identity.
+- TERX does not capture or store screenshots during recording or replay.
 - Conditions accept only `url_contains`, `title_contains`, `text_contains`, and
   `selector_exists`; any other key fails closed rather than running script.
   MCP navigation refuses browser-internal pages (`chrome:`, `devtools:`,
@@ -75,12 +76,8 @@ persisted in the cache's policy summary.
 ## Network egress
 
 Normal cache recording and replay make no network calls beyond the CDP browser
-traffic already initiated by the workflow. The optional `SelfHealer` is not
-called automatically by TERX replay and is disabled by default. If a developer
-sets `TERX_ENABLE_EXPERIMENTAL_HEALING=1` and invokes it directly, it sends the
-provided task, parameters, and sanitized DOM diagnostic data to the configured
-LiteLLM provider. Do not enable that experimental feature for sensitive data
-without reviewing the provider and the supplied inputs.
+traffic already initiated by the workflow. TERX contains no model client and
+never calls an LLM provider.
 
 ## Response targets
 

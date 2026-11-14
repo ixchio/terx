@@ -12,7 +12,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
-from terx.cache.cache import (
+from terx.cache.policy import SideEffect
+from terx.cache import (
     ApprovalVerifier,
     MemoryCache,
     ReplayCostLedger,
@@ -52,7 +53,7 @@ class TerxBrowserUseAdapter:
         scope_id: str | None = None,
         route_pattern: str | None = None,
         workflow_version: int = 1,
-        side_effect: str = "mutating",
+        side_effect: SideEffect = "mutating",
         ttl_seconds: int | None = 86_400,
         precondition: dict[str, Any] | None = None,
         postcondition: dict[str, Any] | Any | None = None,
@@ -143,7 +144,7 @@ def wrap_browser_use(
     scope_id: str | None = None,
     route_pattern: str | None = None,
     workflow_version: int = 1,
-    side_effect: str = "mutating",
+    side_effect: SideEffect = "mutating",
     ttl_seconds: int | None = 86_400,
     precondition: dict[str, Any] | None = None,
     postcondition: dict[str, Any] | Any | None = None,

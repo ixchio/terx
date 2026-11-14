@@ -33,29 +33,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-embeddings = [
-    "sentence-transformers>=3.0",
-    "numpy>=1.24",
-]
-vision = [
-    "opencv-python-headless>=4.0",
-    "scikit-image>=0.20",
-]
-healing = [
-    "litellm>=1.0",
-]
 browser-use = [
     "browser-use>=0.13",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "pytest-benchmark>=4.0",
-    "rich>=13.0",
     "ruff==0.15.11",
-    "python-dotenv>=1.0",
+    "mypy==2.1.0",
 ]
-all = ["terx[embeddings,vision,healing,browser-use,dev]"]
+all = ["terx[browser-use,dev]"]
 
 [project.scripts]
 terx           = "terx.cli:main"
@@ -80,3 +67,8 @@ testpaths   = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["terx"]

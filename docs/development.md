@@ -72,8 +72,8 @@ SQLite cache and JSONL audit writer call the same storage sanitizer. Do not add
 a diagnostic log or an adapter that serializes raw params/results without a
 redaction review.
 
-The experimental `SelfHealer` is manual-only and opt-in. It must never be
-called from the normal replay path.
+TERX has no model client. Do not add one to the replay path: a refusal is
+returned to the host, which decides whether to run an agent.
 
 ## Test requirements
 

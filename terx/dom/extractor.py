@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 try:
     import mmh3
@@ -62,7 +63,7 @@ class AXElement:
     current_value: str  # live value (spinbutton, combobox selected)
     node_id: str  # Chrome AX node ID
     backend_dom_id: int  # Chrome backend DOM node ID
-    bounds: dict | None = None  # {x, y, width, height} if available
+    bounds: dict[str, Any] | None = None  # {x, y, width, height} if available
     depth: int = 0
 
     @property
@@ -122,7 +123,7 @@ class DOMExtractor:
 
         # Get full accessibility tree (no extra params — fetchRelativeNodes doesn't exist)
         ax_result = await bridge.send_internal("Accessibility.getFullAXTree")
-        nodes: list[dict] = ax_result.get("nodes", [])
+        nodes: list[dict[str, Any]] = ax_result.get("nodes", [])
 
         elements = self._extract_interactable(nodes)
         role_seq = _build_role_sequence(elements)
@@ -139,7 +140,7 @@ class DOMExtractor:
     # Roles whose current runtime value can change without DOM structure change
     _VALUE_VOLATILE_ROLES = {"spinbutton", "slider", "scrollbar", "combobox", "listbox"}
 
-    def _extract_interactable(self, nodes: list[dict]) -> list[AXElement]:
+    def _extract_interactable(self, nodes: list[dict[str, Any]]) -> list[AXElement]:
         """Filter to interactable nodes and assign stable deterministic IDs."""
         elements: list[AXElement] = []
 
@@ -199,7 +200,7 @@ class DOMExtractor:
 
         return elements
 
-    def _get_value(self, prop: dict | None) -> str:
+    def _get_value(self, prop: Any) -> str:
         """Extract string value from an AX property dict."""
         if prop is None:
             return ""
@@ -269,7 +270,7 @@ def hash_similarity(seq_a: str, seq_b: str) -> float:
     return 1.0 - (dist / max_len)
 
 
-def _levenshtein_distance(s: list, t: list) -> int:
+def _levenshtein_distance(s: list[str], t: list[str]) -> int:
     """
     Classic Levenshtein on two lists of tokens.
     O(n*m) time, O(min(n,m)) space.

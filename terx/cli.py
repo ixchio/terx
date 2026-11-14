@@ -13,14 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from terx import __version__
-from terx.cache.cache import MemoryCache
+from terx.cache import MemoryCache
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        return args.func(args)
+        return int(args.func(args))
     except KeyboardInterrupt:
         return 130
 

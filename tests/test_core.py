@@ -20,7 +20,6 @@ from terx.dom.extractor import (
 from terx.cache.cache import (
     ApprovalDecision,
     MemoryCache,
-    MuscleMemorycache,
     CDPCommand,
     MutationDriftError,
     PostconditionFailed,
@@ -590,9 +589,13 @@ def test_cli_inspect_cache_redacts_fields():
         assert rows[0]["redacted_fields"] == ["password"]
 
 
-def test_backwards_compat_alias():
-    """MuscleMemorycache should still work as an alias."""
-    assert MuscleMemorycache is MemoryCache
+def test_legacy_cache_module_still_exports_the_public_api():
+    """``terx.cache.cache`` stays importable for 1.x after the module split."""
+    import terx.cache as package
+    import terx.cache.cache as legacy
+
+    for name in package.__all__:
+        assert getattr(legacy, name) is getattr(package, name)
 
 
 def test_cache_multiple_dom_versions_same_task():
@@ -2240,46 +2243,36 @@ async def test_saved_tool_run_is_refused_while_a_task_is_recording(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_baseline_screenshots_are_opt_in_private_and_scoped(monkeypatch):
-    import base64
-    import os
-    import stat
-
+async def test_recording_and_replay_never_capture_screenshots(monkeypatch):
     async def fake_snapshot(self, bridge):
         return bridge.snapshot
 
     class ScreenshotBridge(FakeBridge):
+        captures = 0
+
         async def send_internal(self, method, params=None):
             if method == "Page.captureScreenshot":
-                return {"data": base64.b64encode(b"png-bytes").decode()}
+                ScreenshotBridge.captures += 1
             return await super().send_internal(method, params)
-
-    async def record(cache):
-        bridge = ScreenshotBridge()
-        async with session_for(
-            cache, bridge, "login", variables={"email": "a@example.com"}, **_replay_options()
-        ):
-            await bridge.send("DOM.focus", {"backendNodeId": 101})
-            await bridge.send("Input.insertText", {"text": "a@example.com"})
-        return bridge
 
     monkeypatch.setattr(DOMExtractor, "snapshot", fake_snapshot)
     with tempfile.TemporaryDirectory() as tmp:
         monkeypatch.chdir(tmp)
-        default = MemoryCache(db_path=f"{tmp}/default/test.db", audit_dir=f"{tmp}/audit")
-        await record(default)
-        assert not default.screenshot_dir.exists()
+        cache = MemoryCache(db_path=f"{tmp}/cache/test.db", audit_dir=f"{tmp}/audit")
+        for _ in range(2):  # cold record, then warm replay
+            bridge = ScreenshotBridge()
+            async with session_for(
+                cache, bridge, "login", variables={"email": "a@example.com"}, **_replay_options()
+            ) as ctx:
+                if ctx.hit:
+                    await ctx.replay()
+                else:
+                    await bridge.send("DOM.focus", {"backendNodeId": 101})
+                    await bridge.send("Input.insertText", {"text": "a@example.com"})
+        assert ctx.report.status == "hit"
+        assert ScreenshotBridge.captures == 0
+        assert not (Path(tmp) / "cache" / "screenshots").exists()
         assert not (Path(tmp) / ".terx").exists()
-
-        opted = MemoryCache(
-            db_path=f"{tmp}/opted/test.db", audit_dir=f"{tmp}/audit", visual_audit=True
-        )
-        bridge = await record(opted)
-        files = list(opted.screenshot_dir.iterdir())
-        assert len(files) == 1
-        assert files[0].read_bytes() == b"png-bytes"
-        assert stat.S_IMODE(os.stat(files[0]).st_mode) == 0o600
-        assert bridge.snapshot.structural_hash not in files[0].name
 
 
 @pytest.mark.asyncio

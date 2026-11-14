@@ -65,9 +65,9 @@ run the local semantic replay suite:
 terx eval-local
 ```
 
-The v0.3 raw-CDP benchmark runners are retired and must not be used as v0.4
-performance claims. A new benchmark needs the methodology described in
-`docs/benchmarks.md`.
+The v0.3 raw-CDP benchmark runners were removed in 1.0 (their source remains
+at the `v0.5.3` tag) and must not be used as performance claims. A new
+benchmark needs the methodology described in `docs/benchmarks.md`.
 
 ---
 

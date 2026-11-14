@@ -7,13 +7,21 @@ so the repository stays easy to audit.
 terx/
   cdp/             Raw Chrome DevTools Protocol bridge and browser sessions
   dom/             Accessibility-tree extraction and structural hashing
-  cache/           Semantic recording, scoped replay, redaction, and reports
+  cache/           Scoped replay, split by responsibility:
+    storage.py       SQLite sequences, saved tools, keyed scope digests, audit files
+    policy.py        Replay contract, replayable URLs, approval request/decision
+    recording.py     RecordingContext / session_for: record, store, replay
+    actions.py       Semantic actions (navigate, click, type) over CDP
+    conditions.py    Declarative pre/postconditions and waits
+    redaction.py     Placeholders, variables, secret redaction
+    guard.py         Per-step DOM mutation guard
+    models.py        Persisted actions, sequences, reports
+    errors.py        Replay exceptions
+    cache.py         Compatibility re-exports for `terx.cache.cache` (1.x)
   server/          MCP server and browser tools
-  agent/           Experimental opt-in diagnostics helpers (not replay)
   integrations/    Optional adapters; workflow.py is dependency-free
   evals/           Deterministic local eval suites
-  benchmarks/      Archived v0.3 benchmark source (not a v0.4 release tool)
-  vision/          Optional visual audit helpers
+  tools.py         Saved tool manifests and live result extraction
 
 examples/          Small integration examples
 docs/              Public documentation and site assets
