@@ -1,7 +1,7 @@
-"""Run the installed TERX production demo from a source checkout."""
+"""Run the TERX demo from a source checkout (same as `terx demo`)."""
 
 from terx.demo import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -6,7 +6,28 @@ All notable changes to the TERX browser memory layer are documented in this file
 
 ## [Unreleased]
 
+### Changed
+
+- `terx demo` is now a self-contained walkthrough: it records a sign-in,
+  replays it for a different account with no model call, then shows TERX
+  refusing when the page changes. Each printed check is verified against the
+  real page or TERX's files, and the command exits non-zero if one fails. CI
+  runs it.
+- The README opens with the demo and a 60-second quickstart, and links work on
+  PyPI.
+
+### Fixed
+
+- `terx demo` used fixed ports (8897 and 9333) and a fixed 1.5-second wait for
+  Chrome, so it failed when a port was busy or Chrome started slowly.
+- `terx demo`, `terx doctor`, and the eval suites now find Chrome, Chromium,
+  or Edge on macOS and Windows install paths, not only on `PATH`. Set
+  `TERX_CHROME` to choose a browser explicitly.
+
 ### Added
+
+- `docs/assets/render-demo-gif.sh` renders the README's demo GIF from a real
+  `terx demo` run.
 
 - `.github/workflows/publish.yml` publishes a GitHub Release to PyPI, or an
   existing tag when run by hand. It refuses a tag that does not match the

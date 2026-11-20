@@ -17,7 +17,7 @@ Use a dedicated Chrome profile. A remote-debugging port controls that profile.
 ## Python
 
 ```python
-from terx.cache.cache import MemoryCache, session_for
+from terx import MemoryCache, session_for
 from terx.cdp.session import BrowserSession
 
 

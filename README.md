@@ -1,30 +1,96 @@
-# TERX [![M8ven Score](https://m8ven.ai/badge/mcp/ixchio-terx-izqucs)](https://m8ven.ai/mcp/ixchio-terx-izqucs?s=readme)
+# TERX
 
+[![PyPI](https://img.shields.io/pypi/v/terx)](https://pypi.org/project/terx/)
+[![CI](https://github.com/ixchio/terx/actions/workflows/tests.yml/badge.svg)](https://github.com/ixchio/terx/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/pypi/pyversions/terx)](https://pypi.org/project/terx/)
+[![License](https://img.shields.io/pypi/l/terx)](https://github.com/ixchio/terx/blob/main/LICENSE)
+[![M8ven Score](https://m8ven.ai/badge/mcp/ixchio-terx-izqucs)](https://m8ven.ai/mcp/ixchio-terx-izqucs?s=readme)
 
-**Local, policy-enforced replay for approved browser-agent workflows.**
+**Your browser agent already did this task once. Replay it without the
+model, and only when it is safe to.**
 
-TERX records a small, semantic workflow after a browser agent succeeds, then
-replays it through Chrome DevTools Protocol without a TERX model call. It is
-for repeatable workflows whose starting state, caller scope, and successful
-outcome can be stated explicitly.
+TERX records what a browser agent did as a few plain actions, such as "type
+into Email" and "click Sign in". The next time the same task comes up, TERX
+replays those actions directly in Chrome with no model call. Before it acts it
+checks the page and the account scope, and afterwards it checks the result. If
+something does not match, it refuses and hands control back to your agent
+instead of guessing.
 
-It is not a general browser automation framework, an autonomous fallback
-agent, or a safe way to replay arbitrary JavaScript.
+![terx demo: record a sign-in, replay it for a different account with no model call, then refuse when the page changes](https://raw.githubusercontent.com/ixchio/terx/main/docs/assets/terx-demo.gif)
 
-## When TERX earns its place
+## Try it in 60 seconds
 
-Use TERX when an agent has already completed a browser workflow and you want
-the next run to be cheap, local, and constrained by evidence—not rediscovered
-by another model call. It is a fit for repeatable internal tasks such as
-logging into a known account, searching an operations dashboard, or filing an
-approved action behind a control-plane approval.
+```bash
+pip install terx
+terx demo
+```
 
-On a cache hit, TERX re-checks the caller scope and starting conditions,
-re-resolves every accessible target, executes only the semantic action set
-below, then verifies the intended outcome. If any check is ambiguous or
-false, it refuses instead of guessing.
+You need Chrome, Chromium, or Edge installed. The demo starts its own
+throwaway headless browser and a page served from your machine. It needs no
+API key and no account, and nothing leaves your computer.
 
-## Replay contract
+## What you just saw
+
+1. **Record.** A stand-in for your agent signed in. TERX saved three actions,
+   but only after checking the page showed the expected result. The password
+   was saved as `{{password}}`, never its value.
+2. **Replay.** The same task ran for a different account. No agent and no
+   model were involved, and TERX checked the result again.
+3. **Refuse.** The page changed so that two fields were both called "Email".
+   TERX could not tell which one was meant, so it stopped before typing
+   anything.
+
+Every "✓" in the demo is checked against the real page or TERX's real files
+while it runs.
+
+## Use it with your agent
+
+**From an MCP client (Cursor, Claude Desktop, Windsurf, Codex).** TERX ships
+an MCP server that gives your agent a browser, plus recording and replay.
+
+1. Start Chrome with remote debugging:
+
+   ```bash
+   google-chrome --remote-debugging-port=9222 --no-first-run \
+     --user-data-dir=/tmp/terx-chrome
+   ```
+
+2. Add the server to your client. This prints the snippet to paste:
+
+   ```bash
+   terx mcp-config --client cursor
+   ```
+
+3. Your agent wraps a repeatable task in `browser_task_start` and
+   `browser_task_finish`. The first run is recorded. Later runs of the same
+   task replay without the model. See [MCP](#mcp) for the full contract.
+
+**From Python.** If your code already drives Chrome over CDP, wrap a task with
+`TerxWorkflow`: see the [application adapter](#lightweight-application-adapter).
+
+## Is TERX right for you?
+
+**A good fit when:**
+
+- your agent repeats the same browser task (sign in, look up an order, file a
+  form) and pays for a model to work it out again every time;
+- a recorded task must only run for the right account, on the page it was
+  recorded on, and must stop when the page has changed;
+- destructive steps need an approval that can be used only once.
+
+**Not a fit when:**
+
+- the task is one-off exploration, so there is nothing to replay;
+- your agent drives the browser through Playwright or its own CDP connection.
+  Today TERX records only actions sent through its MCP tools or its Python
+  adapter;
+- the task needs file uploads, drag and drop, multiple tabs, or iframes from
+  another site. TERX will not record those yet;
+- you want a general automation framework or a hosted browser fleet. Use
+  Playwright, Stagehand, or Browser Use for that. TERX is the layer that
+  decides whether a known-good task may be reused.
+
+## How replay stays safe
 
 Every cacheable workflow must declare:
 
@@ -71,24 +137,13 @@ SQLite—no Playwright or Selenium runtime, browser fleet, background service,
 or cloud account. The workflow adapter holds an accessibility snapshot only
 while a cold path is running and discards it before the next workflow.
 
-## Install
-
-```bash
-pip install terx
-```
-
-TERX needs a local Chrome or Chromium instance with remote debugging enabled:
-
-```bash
-google-chrome --remote-debugging-port=9222 --no-first-run \
-  --user-data-dir=/tmp/terx-chrome
-```
-
 ## Python quickstart
 
+Start Chrome with remote debugging as shown [above](#use-it-with-your-agent),
+then:
+
 ```python
-from terx.cache.cache import MemoryCache, session_for
-from terx.cdp.session import BrowserSession
+from terx import BrowserSession, MemoryCache, session_for
 
 cache = MemoryCache()
 
@@ -263,7 +318,7 @@ Run the complete local `check_order_status(account_id, order_id)` example:
 python3 examples/saved_tool_order_status.py
 ```
 
-[Watch the reproducible 20-second demo](docs/assets/terx-v0.5-saved-tool-demo.mp4).
+[Watch the reproducible 20-second demo](https://github.com/ixchio/terx/blob/main/docs/assets/terx-v0.5-saved-tool-demo.mp4).
 It records the approved local lookup, saves its contract, reconnects Chrome, and
 returns a fresh status for a different account and order ID. The video shows
 **zero TERX model calls during replay**; it does not claim the caller or browser
@@ -294,7 +349,7 @@ full boundary and reporting policy.
 ## Supported integration surface
 
 Python, the dependency-free workflow adapter, saved MCP tools, and the built-in
-MCP server are supported in 1.0, under the [versioning policy](docs/versioning.md). The
+MCP server are supported in 1.0, under the [versioning policy](https://github.com/ixchio/terx/blob/main/docs/versioning.md). The
 Browser Use adapter is experimental: it can only record
 agents that intentionally drive the TERX CDP bridge supplied to it. A normal
 Browser Use session is not a drop-in capture source.
@@ -316,16 +371,8 @@ DOM, iframes, translated labels, checkboxes, dropdowns, Enter to submit, URL
 variables, and five pages that must be refused) and checks the real page
 outcome. It reports the **replay rate**, the **false refusal rate**, and
 **unsafe outcomes**; `--gate`, which CI runs, fails on any unsafe outcome or
-false refusal. See [benchmarks](docs/benchmarks.md) for current numbers.
+false refusal. See [benchmarks](https://github.com/ixchio/terx/blob/main/docs/benchmarks.md) for current numbers.
 Neither suite establishes compatibility with arbitrary production websites.
-
-## What TERX is not
-
-TERX does not replace Playwright, Stagehand, Browser Use, or hosted browser
-automation platforms. Those products provide broader automation, browser fleet,
-observability, anti-bot, and agent capabilities. TERX's focused value is a
-local replay gate: reuse a known-good, explicitly approved workflow only when
-its scope and evidence still match.
 
 ## Development
 

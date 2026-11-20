@@ -42,7 +42,7 @@ from urllib.parse import parse_qs
 from terx.cache import MemoryCache
 from terx.cdp.bridge import CDPBridge
 from terx.cdp.session import BrowserSession
-from terx.evals.local_suite import launch_chrome, stop_chrome
+from terx.cdp.chrome import launch_chrome, stop_chrome
 from terx.integrations.workflow import TerxActions, TerxWorkflow
 
 Variant = Literal["cold", "warm"]

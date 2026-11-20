@@ -32,7 +32,7 @@ That navigation belongs to the host application's setup; the workflow's
 precondition must verify the state that is actually replayable.
 
 ```python
-from terx.cache.cache import MemoryCache
+from terx import MemoryCache
 from terx.cdp.session import BrowserSession
 from terx.integrations.workflow import TerxWorkflow
 
