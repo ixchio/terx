@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sqlite3
 import sys
 import urllib.error
@@ -14,6 +13,7 @@ from typing import Any
 
 from terx import __version__
 from terx.cache import MemoryCache
+from terx.cdp.chrome import ChromeNotFoundError, find_chrome
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,8 +123,7 @@ def _cmd_purge(args: argparse.Namespace) -> int:
 def _cmd_demo(_: argparse.Namespace) -> int:
     from terx.demo import main as demo_main
 
-    demo_main()
-    return 0
+    return demo_main()
 
 
 def _cmd_eval_local(_: argparse.Namespace) -> int:
@@ -163,11 +162,10 @@ def _cmd_mcp_config(args: argparse.Namespace) -> int:
 
 
 def _chrome_binary() -> str | None:
-    for name in ("google-chrome", "chromium", "chromium-browser"):
-        binary = shutil.which(name)
-        if binary:
-            return binary
-    return None
+    try:
+        return find_chrome()
+    except ChromeNotFoundError:
+        return None
 
 
 def _probe_cdp(host: str, port: int) -> dict[str, Any]:

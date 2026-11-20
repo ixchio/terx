@@ -44,6 +44,8 @@ build/
 __pycache__/
 ```
 
-`docs/assets/terx-demo.gif` is the only committed demo animation. Old generated
+`docs/assets/terx-demo.gif` is the only committed demo animation. It is rendered
+from a real `terx demo` run by `docs/assets/render-demo-gif.sh`; re-run that
+script when the demo's output changes. Old generated
 assets and one-off bug reports should be moved into docs or deleted instead of
 living at the repository root.

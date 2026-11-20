@@ -2912,7 +2912,7 @@ class _FakeChrome:
 async def test_devtools_port_is_read_from_the_file_chrome_writes():
     import asyncio
 
-    from terx.evals.local_suite import _wait_for_devtools_port
+    from terx.cdp.chrome import _wait_for_devtools_port
 
     server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -2934,7 +2934,7 @@ async def test_devtools_port_is_read_from_the_file_chrome_writes():
 
 @pytest.mark.asyncio
 async def test_devtools_wait_reports_early_exit_and_timeout():
-    from terx.evals.local_suite import _wait_for_devtools_port
+    from terx.cdp.chrome import _wait_for_devtools_port
 
     with tempfile.TemporaryDirectory() as profile:
         with pytest.raises(RuntimeError, match="exited before CDP was ready.*sandbox"):
@@ -2946,7 +2946,7 @@ async def test_devtools_wait_reports_early_exit_and_timeout():
 
 
 def test_chrome_startup_timeout_is_configurable(monkeypatch):
-    from terx.evals.local_suite import _chrome_startup_timeout
+    from terx.cdp.chrome import _chrome_startup_timeout
 
     monkeypatch.delenv("TERX_CHROME_STARTUP_TIMEOUT", raising=False)
     assert _chrome_startup_timeout() == 30.0
@@ -2955,3 +2955,107 @@ def test_chrome_startup_timeout_is_configurable(monkeypatch):
     for invalid in ("soon", "0", "-5"):
         monkeypatch.setenv("TERX_CHROME_STARTUP_TIMEOUT", invalid)
         assert _chrome_startup_timeout() == 30.0
+
+
+# ------------------------------------------------------------------ #
+# Browser discovery and the `terx demo` walkthrough                    #
+# ------------------------------------------------------------------ #
+
+
+def test_find_chrome_prefers_the_override_then_path_then_install_locations(monkeypatch, tmp_path):
+    import shutil
+
+    from terx.cdp import chrome as chrome_module
+    from terx.cdp.chrome import ChromeNotFoundError, find_chrome
+
+    browser = tmp_path / "my-chrome"
+    browser.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(chrome_module, "_install_locations", lambda: [])
+
+    monkeypatch.setenv("TERX_CHROME", str(browser))
+    assert find_chrome() == str(browser)
+
+    monkeypatch.setenv("TERX_CHROME", str(tmp_path / "missing"))
+    with pytest.raises(ChromeNotFoundError, match="TERX_CHROME is set to"):
+        find_chrome()
+
+    monkeypatch.delenv("TERX_CHROME")
+    with pytest.raises(ChromeNotFoundError, match="set TERX_CHROME"):
+        find_chrome()
+
+    monkeypatch.setattr(chrome_module, "_install_locations", lambda: [browser])
+    assert find_chrome() == str(browser)
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/chromium" if name == "chromium" else None
+    )
+    assert find_chrome() == "/usr/bin/chromium"
+
+
+def test_install_locations_cover_macos_and_windows(monkeypatch):
+    import sys
+
+    from terx.cdp.chrome import _install_locations
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    mac = [str(path) for path in _install_locations()]
+    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in mac
+    assert any(path.endswith("Microsoft Edge.app/Contents/MacOS/Microsoft Edge") for path in mac)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PROGRAMFILES", "C:/Program Files")
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    windows = [path.as_posix() for path in _install_locations()]
+    assert "C:/Program Files/Google/Chrome/Application/chrome.exe" in windows
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _install_locations() == []
+
+
+def test_demo_page_drift_adds_exactly_one_same_label_field():
+    from terx.demo import _page
+
+    original, changed = _page(False), _page(True)
+    assert original.count("<label>Email") == 1
+    assert changed.count("<label>Email") == 2
+    assert (
+        changed.replace("<footer><label>Email <input id=news type=email></label></footer>", "")
+        == original
+    )
+
+
+def test_demo_reads_stored_actions_and_scans_files_for_secrets(tmp_path):
+    from terx.demo import _files_contain, _stored_actions
+
+    cache = MemoryCache(db_path=tmp_path / "cache.db", audit_dir=tmp_path / "audit")
+    commands = [
+        _semantic_type("Email", "email"),
+        CDPCommand("TERX.click", {"target": {"role": "button", "label": "Sign in"}}, {}, 1.0),
+    ]
+    cache.write_audit("demo", "sign in", commands, "127.0.0.1", False)
+    lines = _stored_actions(tmp_path / "audit")
+    assert lines[0].split() == ["TERX.type", "textbox", '"Email"', "{{email}}"]
+    assert lines[1].split() == ["TERX.click", "button", '"Sign', 'in"']
+
+    assert not _files_contain(tmp_path, ["first-demo-secret"])
+    (tmp_path / "leak.txt").write_text("oops first-demo-secret")
+    assert _files_contain(tmp_path, ["first-demo-secret"])
+
+
+def test_demo_printer_marks_failures_and_falls_back_to_ascii(monkeypatch, capsys):
+    import io
+    import sys
+
+    from terx.demo import _Printer
+
+    out = _Printer()
+    assert out.check(True, "fine") is True and out.failed is False
+    assert out.check(False, "fine", "broken") is False and out.failed is True
+    printed = capsys.readouterr().out
+    assert "fine" in printed and "broken" in printed
+
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(io.BytesIO(), encoding="ascii"))
+    ascii_out = _Printer()
+    assert (ascii_out._ok, ascii_out._bad) == ("OK", "FAILED")
